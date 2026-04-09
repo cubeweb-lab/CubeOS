@@ -1,5 +1,5 @@
 # CubeOS
-64-bit OS written an NASM
+64-bit OS written in NASM
 
 ---
 
