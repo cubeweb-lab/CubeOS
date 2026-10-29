@@ -32,10 +32,6 @@ SECTIONS {
         KEEP(*(.program_buf))
     }
 
-    .kernel_stack ALIGN(4K) : {
-        KEEP(*(.kernel_stack))
-    }
-
     /* Запас под RSP ядра */
     . = ALIGN(16);
     . += 0x40000;

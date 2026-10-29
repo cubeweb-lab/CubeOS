@@ -63,6 +63,7 @@ macro_rules! gen_stub {
             core::arch::naked_asm!(
                 "push rdi",
                 "mov rdi, {num}",
+                "mov rsi, [rsp + 16]",
                 "call {handler}",
                 "pop rdi",
                 "iretq",
@@ -82,6 +83,7 @@ macro_rules! gen_stub_error {
                 "push rdi",
                 "mov rdi, {num}",
                 "mov rsi, [rsp + 8]",
+                "mov rdx, [rsp + 24]",
                 "call {handler}",
                 "pop rdi",
                 "add rsp, 8",
@@ -196,7 +198,7 @@ extern "C" fn irq_body() {
 
 // ===== Обработчики исключений =====
 #[no_mangle]
-pub extern "C" fn exception_handler(int_num: u64) {
+pub extern "C" fn exception_handler(int_num: u64, cs: u64) {
     crate::serial::log_error("EXCEPTION");
     crate::serial::send_string("  Vector: ");
     let mut buf = [0u8; 20];
@@ -206,11 +208,20 @@ pub extern "C" fn exception_handler(int_num: u64) {
     else { while n > 0 { i -= 1; buf[i] = (n % 10) as u8 + b'0'; n /= 10; } }
     crate::serial::send_string(core::str::from_utf8(&buf[i..]).unwrap_or("?"));
     crate::serial::send_string("\n");
+    terminate_if_user(cs);
     loop { unsafe { core::arch::asm!("cli; hlt") } }
 }
 
+// CPL lives in the low two bits of the interrupted CS; ring 3 means the fault belongs to a process, not the kernel.
+fn terminate_if_user(cs: u64) {
+    if cs & 3 == 3 {
+        crate::serial::log_error("Faulting task is user mode, terminating it");
+        crate::sched::exit_current();
+    }
+}
+
 #[no_mangle]
-pub extern "C" fn exception_handler_with_code(int_num: u64, error_code: u64) {
+pub extern "C" fn exception_handler_with_code(int_num: u64, error_code: u64, cs: u64) {
     crate::serial::log_error("EXCEPTION");
     crate::serial::send_string("  Vector: ");
     let mut buf = [0u8; 20];
@@ -238,6 +249,7 @@ pub extern "C" fn exception_handler_with_code(int_num: u64, error_code: u64) {
         crate::serial::send_string(core::str::from_utf8(&buf[..16]).unwrap_or("?"));
         crate::serial::send_string("\n");
     }
+    terminate_if_user(cs);
     loop { unsafe { core::arch::asm!("cli; hlt") } }
 }
 

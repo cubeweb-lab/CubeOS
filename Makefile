@@ -32,7 +32,7 @@ csh: $(CSH)
 iso: $(ISO)
 
 hdd: $(HDD) $(KERNEL) $(CSH) config/boot.cfg
-	-mmd -D -i $(HDD)@@$(SYSTEM_OFFSET) ::/system ::/system/kernel ::/system/config ::/bin ::/home ::/tmp ::/etc
+	-mmd -i $(HDD)@@$(SYSTEM_OFFSET) ::/system ::/system/kernel ::/system/config ::/bin ::/home ::/tmp ::/etc
 	mcopy -o -i $(HDD)@@$(SYSTEM_OFFSET) $(KERNEL) $(SYSTEM_KERNEL)
 	mcopy -o -i $(HDD)@@$(SYSTEM_OFFSET) $(CSH) ::/bin/csh
 	mcopy -o -i $(HDD)@@$(SYSTEM_OFFSET) config/boot.cfg ::/system/config/boot.cfg

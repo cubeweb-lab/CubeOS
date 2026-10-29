@@ -181,7 +181,7 @@ init_gdt64:
     mov byte [GDT64_ADDR + 45], 0x89
     mov byte [GDT64_ADDR + 46], 0x00
     mov byte [GDT64_ADDR + 47], ah
-    mov dword [GDT64_ADDR + 48], eax
+    mov dword [GDT64_ADDR + 48], 0
     mov dword [GDT64_ADDR + 52], 0
 
     ; GDT pointer

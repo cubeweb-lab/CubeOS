@@ -48,7 +48,7 @@ pub struct Task {
     pub stack_pages: usize,
 
     /// PML4 для этого процесса. 0 = kernel task (identity, KERNEL_CR3).
-    /// Владелец AddressSpace: при уничтожении task — aspace.destroy().
+    /// Владелец AddressSpace: при reap зомби-задачи освобождается через vmm::destroy_pml4(cr3).
     pub cr3: u64,
     pub user_rsp: u64,
     pub user_rip: u64,

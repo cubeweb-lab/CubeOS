@@ -83,15 +83,6 @@ impl AddressSpace {
         Some((leaf & PTE_ADDR_MASK) | (virt & (PAGE_SIZE - 1)))
     }
 
-    pub fn destroy(self) {
-        for idx in 1..ENTRIES {
-            let entry = read_entry(self.pml4, idx);
-            if entry & PTE_PRESENT != 0 {
-                free_tree(entry & PTE_ADDR_MASK, 3);
-            }
-        }
-        memory::free_page(self.pml4);
-    }
 
     fn map_leaf(&mut self, virt: u64, frame: u64, writable: bool) -> bool {
         let mut table = self.pml4;
@@ -116,6 +107,18 @@ impl AddressSpace {
         invlpg(virt);
         true
     }
+}
+
+/// Frees a process PML4 and every table and frame below it. Slot 0 is the shared kernel
+/// mapping, so it is skipped. The caller must not have this PML4 loaded in CR3.
+pub fn destroy_pml4(pml4: u64) {
+    for idx in 1..ENTRIES {
+        let entry = read_entry(pml4, idx);
+        if entry & PTE_PRESENT != 0 {
+            free_tree(entry & PTE_ADDR_MASK, 3);
+        }
+    }
+    memory::free_page(pml4);
 }
 
 pub fn in_user_range(virt: u64) -> bool {
