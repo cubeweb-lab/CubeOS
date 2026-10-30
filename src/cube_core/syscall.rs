@@ -85,7 +85,8 @@ pub fn init_syscall(kernel_rsp: u64) {
 
         wrmsr(IA32_STAR, (0x08u64 << 48) | (0x18u64 << 32));
         wrmsr(IA32_LSTAR, syscall_entry as u64);
-        wrmsr(IA32_FMASK, 0x700);
+        // Keep IF set inside syscalls so keyboard and timer IRQs are served while the shell polls stdin.
+        wrmsr(IA32_FMASK, 0x500);
 
         crate::serial::send_string("[SYSCALL] syscall/sysret configured\n");
         crate::serial::send_string("[TSS] rsp0=");
