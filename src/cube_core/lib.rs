@@ -378,15 +378,7 @@ pub extern "C" fn kernel_main_loop() -> ! {
             crate::serial::send_string("\n");
         }
 
-        if let Some(sc) = interrupts::keyboard_pop() {
-            crate::serial::send_string("[INPUT] scancode=0x");
-            let mut h = [0u8; 2];
-            h[0] = if (sc >> 4) < 10 { b'0' + (sc >> 4) } else { b'A' + (sc >> 4) - 10 };
-            h[1] = if (sc & 0xF) < 10 { b'0' + (sc & 0xF) } else { b'A' + (sc & 0xF) - 10 };
-            crate::serial::send_string(core::str::from_utf8(&h).unwrap_or("?"));
-            crate::serial::send_string("\n");
-        }
-
+        // Keys stay in the buffer for the shell: this loop must not consume them.
         unsafe { core::arch::asm!("hlt") }
     }
 }

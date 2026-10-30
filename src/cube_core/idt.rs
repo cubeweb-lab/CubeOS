@@ -180,11 +180,21 @@ extern "x86-interrupt" fn keyboard_handler(_sf: &InterruptStackFrame) {
     );
 }
 
+// One IRQ can stand for several bytes: a key press and its release often arrive together,
+// and the controller keeps the second one until the output buffer is read again.
+// Drain the buffer (status bit 0 on port 0x64) so no scancode waits for the next key.
 #[no_mangle]
 extern "C" fn keyboard_body() {
-    let sc: u8;
-    unsafe { core::arch::asm!("in al, 0x60", out("al") sc); }
-    crate::interrupts::keyboard_push(sc);
+    loop {
+        let status: u8;
+        unsafe { core::arch::asm!("in al, 0x64", out("al") status); }
+        if status & 0x01 == 0 {
+            break;
+        }
+        let sc: u8;
+        unsafe { core::arch::asm!("in al, 0x60", out("al") sc); }
+        crate::interrupts::keyboard_push(sc);
+    }
     crate::apic::eoi();
 }
 
@@ -301,6 +311,16 @@ pub extern "C" fn exception_handler_with_code(int_num: u64, error_code: u64, cs:
         }
         crate::serial::send_string(core::str::from_utf8(&buf[..16]).unwrap_or("?"));
         crate::serial::send_string("\n");
+        let cr3: u64;
+        unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3); }
+        crate::serial::send_string("  CR3=0x");
+        for j in 0..16 {
+            let nib = ((cr3 >> ((15 - j) * 4)) & 0xF) as u8;
+            buf[j] = if nib < 10 { b'0' + nib } else { b'A' + nib - 10 };
+        }
+        crate::serial::send_string(core::str::from_utf8(&buf[..16]).unwrap_or("?"));
+        crate::serial::send_string("\n");
+        crate::vmm::debug_walk(cr3, cr2);
     }
     terminate_if_user(cs);
     loop { unsafe { core::arch::asm!("cli; hlt") } }

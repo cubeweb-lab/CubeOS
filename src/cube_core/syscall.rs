@@ -35,6 +35,10 @@ const MAX_FD: usize = 16;
 const MAX_PATH: usize = 256;
 const MAX_DIR_ITEMS: usize = 64;
 
+// The kernel stack of a user task is a single 4 KiB page, far too small for this array (~18 KiB),
+// so it lives in static memory. Only getdents uses it, and the kernel runs one syscall at a time here.
+static mut DIR_ITEMS: [DirItem; MAX_DIR_ITEMS] = [EMPTY_ITEM; MAX_DIR_ITEMS];
+
 #[derive(Copy, Clone)]
 enum FdKind {
     Free,
@@ -88,7 +92,8 @@ pub fn init_syscall(kernel_rsp: u64) {
         // and the iretq that returned from it raised #GP.
         wrmsr(IA32_STAR, (0x10u64 << 48) | (0x08u64 << 32));
         wrmsr(IA32_LSTAR, syscall_entry as u64);
-        wrmsr(IA32_FMASK, 0x700);
+        // IF stays set in syscalls so the keyboard and timer IRQs run while the shell waits in stdin reads.
+        wrmsr(IA32_FMASK, 0x500);
 
         crate::serial::send_string("[SYSCALL] syscall/sysret configured\n");
         crate::serial::send_string("[TSS] rsp0=");
@@ -336,8 +341,8 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                     FdKind::Dir { path, path_len, pos } => (path, path_len, pos),
                     _ => return u64::MAX,
                 };
-                let mut items = [EMPTY_ITEM; MAX_DIR_ITEMS];
-                let count = match zigfs::list(0, &path[..path_len], &mut items) {
+                let items = &mut *core::ptr::addr_of_mut!(DIR_ITEMS);
+                let count = match zigfs::list(0, &path[..path_len], items) {
                     Some(n) => n,
                     None => return u64::MAX,
                 };

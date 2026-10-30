@@ -151,6 +151,27 @@ fn alloc_table() -> Option<u64> {
     Some(table)
 }
 
+/// Prints the paging entries that translate `va` under `cr3`, one line per level, for fault diagnosis.
+pub fn debug_walk(cr3: u64, va: u64) {
+    let indices = [(va >> 39) & 0x1FF, (va >> 30) & 0x1FF, (va >> 21) & 0x1FF, (va >> 12) & 0x1FF];
+    let mut table = cr3 & PTE_ADDR_MASK;
+    for (level, &idx) in indices.iter().enumerate() {
+        let entry = read_entry(table, idx as usize);
+        crate::serial::send_string("  walk L");
+        crate::serial::send_byte(b'4' - level as u8);
+        crate::serial::send_string(" entry=0x");
+        for j in 0..16 {
+            let nib = ((entry >> ((15 - j) * 4)) & 0xF) as u8;
+            crate::serial::send_byte(if nib < 10 { b'0' + nib } else { b'A' + nib - 10 });
+        }
+        crate::serial::send_string("\n");
+        if entry & 1 == 0 {
+            break;
+        }
+        table = entry & PTE_ADDR_MASK;
+    }
+}
+
 fn read_entry(table: u64, idx: usize) -> u64 {
     unsafe { *((table as *const u64).add(idx)) }
 }
