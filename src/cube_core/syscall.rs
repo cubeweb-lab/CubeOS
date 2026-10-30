@@ -83,10 +83,12 @@ pub fn init_syscall(kernel_rsp: u64) {
         let efer = rdmsr(IA32_EFER);
         wrmsr(IA32_EFER, efer | 1);
 
-        wrmsr(IA32_STAR, (0x08u64 << 48) | (0x18u64 << 32));
+        // syscall loads CS = STAR[47:32] (kernel code 0x08) and SS = that + 8 (kernel data 0x10).
+        // Using the user-code selector 0x18 here made every interrupt taken inside a syscall push CS=0x18,
+        // and the iretq that returned from it raised #GP.
+        wrmsr(IA32_STAR, (0x10u64 << 48) | (0x08u64 << 32));
         wrmsr(IA32_LSTAR, syscall_entry as u64);
-        // Keep IF set inside syscalls so keyboard and timer IRQs are served while the shell polls stdin.
-        wrmsr(IA32_FMASK, 0x500);
+        wrmsr(IA32_FMASK, 0x700);
 
         crate::serial::send_string("[SYSCALL] syscall/sysret configured\n");
         crate::serial::send_string("[TSS] rsp0=");
@@ -243,7 +245,8 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                 let buf = a2 as *mut u8;
                 let max = a3 as usize;
                 let mut n = 0usize;
-                // Читаем только то, что уже есть в буфере, не блокируя ядро
+                // Block until the first key arrives. IF is cleared on syscall entry, so it is enabled
+                // only here, after the kernel stack is in use: IRQs never land on the user stack.
                 while n < max {
                     if let Some(sc) = crate::interrupts::keyboard_pop() {
                         if let Some(ch) = scancode_to_ascii(sc) {
@@ -252,8 +255,9 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                             unsafe { crate::serial::send_byte(ch); }
                             if ch == b'\n' { break; }
                         }
+                    } else if n == 0 {
+                        unsafe { core::arch::asm!("sti", "hlt", "cli") };
                     } else {
-                        // Данных нет, выходим. Шелл сам решит, что делать (повторить или отдать квант)
                         break;
                     }
                 }

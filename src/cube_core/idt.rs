@@ -102,6 +102,7 @@ macro_rules! gen_stub_error {
                 "mov rsi, [rbp + 8]",
                 "mov rdx, [rbp + 24]",
                 "mov rcx, [rbp + 16]",
+                "mov r8, [rbp + 40]",
                 "call {handler}",
                 "add rsp, 8",
                 "pop r11", "pop r10", "pop r9", "pop r8",
@@ -250,8 +251,22 @@ fn terminate_if_user(cs: u64) {
 }
 
 #[no_mangle]
-pub extern "C" fn exception_handler_with_code(int_num: u64, error_code: u64, cs: u64, rip: u64) {
+pub extern "C" fn exception_handler_with_code(int_num: u64, error_code: u64, cs: u64, rip: u64, fault_rsp: u64) {
     print_rip(rip);
+    // The five words at the faulting %rsp are the frame that iretq was about to pop.
+    for i in 0..5u64 {
+        let word = unsafe { *((fault_rsp + i * 8) as *const u64) };
+        crate::serial::send_string("  iret frame[");
+        crate::serial::send_byte(b'0' + i as u8);
+        crate::serial::send_string("]=0x");
+        let mut wbuf = [0u8; 16];
+        for j in 0..16 {
+            let nib = ((word >> ((15 - j) * 4)) & 0xF) as u8;
+            wbuf[j] = if nib < 10 { b'0' + nib } else { b'A' + nib - 10 };
+        }
+        crate::serial::send_string(core::str::from_utf8(&wbuf).unwrap_or("?"));
+        crate::serial::send_string("\n");
+    }
     crate::serial::send_string("  frame cs=0x");
     let mut cbuf = [0u8; 16];
     for j in 0..16 {
