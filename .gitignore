@@ -28,3 +28,7 @@ Cargo.lock
 build/
 iso/
 libkernel.a
+
+# Zig build output
+zig/zig-out/
+zig/.zig-cache/

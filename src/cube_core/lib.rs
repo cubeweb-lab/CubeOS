@@ -14,6 +14,7 @@ mod panic;
 mod fs;
 mod vesa_log;
 mod ata;
+mod zigfs;
 mod checks;
 mod elf;
 mod loader;
@@ -275,6 +276,10 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
             if let Some(size) = fs.read_file(&ata, "/SYSTEM/CONFIG/BOOT.CFG", &mut config_buf) {
                 if let Ok(text) = core::str::from_utf8(&config_buf[..size]) {
                     log_both(&mut vesa_log, "OK", "Boot config loaded");
+
+                    if let Some(partition_lba) = fs.fat32.as_ref().map(|f| f.partition_start) {
+                        zigfs::verify_file(partition_lba, "/SYSTEM/CONFIG/BOOT.CFG", &config_buf[..size]);
+                    }
 
                     let cmdline = checks::config_cmdline(text);
 
