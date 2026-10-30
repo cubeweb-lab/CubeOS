@@ -348,3 +348,87 @@ test "FAT12 entries use the standard packed layout, including a sector-boundary 
     try std.testing.expectEqual(@as(u8, 0xAB), fs.image[fat_base + 512]);
     try std.testing.expectEqual(@as(u32, 0xABC), fat.get_fat_entry(.Master, fs.bpb, 341));
 }
+
+fn testReadAtOffset(kind: Kind) !void {
+    var fs = try setup(std.testing.allocator, kind);
+    defer fs.deinit();
+
+    var data: [3000]u8 = undefined;
+    fillPattern(&data);
+    try std.testing.expect(fat.write_file(.Master, fs.bpb, 0, "DATA.BIN", &data));
+
+    var handle = fat.fat_open(.Master, fs.bpb, 0, "DATA.BIN") orelse return error.OpenFailed;
+    try std.testing.expectEqual(@as(i64, 1500), fat.fat_lseek(&handle, 1500, 0));
+
+    var out: [100]u8 = undefined;
+    try std.testing.expectEqual(@as(i32, 100), fat.fat_read(&handle, &out, out.len));
+    try std.testing.expectEqualSlices(u8, data[1500..1600], &out);
+
+    var rest: [3000]u8 = undefined;
+    try std.testing.expectEqual(@as(i32, 1400), fat.fat_read(&handle, &rest, rest.len));
+    try std.testing.expectEqualSlices(u8, data[1600..], rest[0..1400]);
+    try std.testing.expectEqual(@as(i32, 0), fat.fat_read(&handle, &rest, rest.len));
+}
+
+test "FAT12 fat_read returns binary data from the handle offset to end of file" {
+    try testReadAtOffset(.fat12);
+}
+
+test "FAT16 fat_read returns binary data from the handle offset to end of file" {
+    try testReadAtOffset(.fat16);
+}
+
+fn testCollectEntries(kind: Kind) !void {
+    var fs = try setup(std.testing.allocator, kind);
+    defer fs.deinit();
+
+    try std.testing.expect(fat.write_file(.Master, fs.bpb, 0, "NOTES.TXT", "a"));
+    try std.testing.expect(fat.write_file(.Master, fs.bpb, 0, "Long Document Name.txt", "b"));
+    try std.testing.expect(fat.create_directory(.Master, fs.bpb, 0, "SUB"));
+
+    var items: [8]fat.ListItem = undefined;
+    const n = fat.collect_entries(.Master, fs.bpb, 0, &items);
+    try std.testing.expectEqual(@as(usize, 3), n);
+    try std.testing.expectEqualStrings("NOTES.TXT", items[0].name[0..items[0].name_len]);
+    try std.testing.expectEqualStrings("Long Document Name.txt", items[1].name[0..items[1].name_len]);
+    try std.testing.expectEqualStrings("SUB", items[2].name[0..items[2].name_len]);
+    try std.testing.expectEqual(@as(u32, 0x10), items[2].attr & 0x10);
+    try std.testing.expectEqual(@as(u32, 1), items[0].size);
+}
+
+test "FAT12 collect_entries lists short and long names without dot entries" {
+    try testCollectEntries(.fat12);
+}
+
+test "FAT16 collect_entries lists short and long names without dot entries" {
+    try testCollectEntries(.fat16);
+}
+
+fn testResolveFullPathNoDoubleSlash(kind: Kind) !void {
+    var fs = try setup(std.testing.allocator, kind);
+    defer fs.deinit();
+
+    try std.testing.expect(fat.create_directory(.Master, fs.bpb, 0, "A"));
+    const a = fat.find_entry_literal(.Master, fs.bpb, 0, "A") orelse return error.MissingDir;
+    const a_cluster = @as(u32, a.first_cluster_low) | (@as(u32, a.first_cluster_high) << 16);
+    try std.testing.expect(fat.create_directory(.Master, fs.bpb, a_cluster, "B"));
+
+    const deep = fat.resolve_full_path(.Master, fs.bpb, 0, "/", "A/B") orelse return error.ResolveFailed;
+    try std.testing.expectEqualStrings("/A/B", deep.path[0..deep.path_len]);
+    try std.testing.expect(deep.is_dir);
+
+    const up = fat.resolve_full_path(.Master, fs.bpb, deep.cluster, deep.path[0..deep.path_len], "..") orelse return error.ResolveFailed;
+    try std.testing.expectEqualStrings("/A", up.path[0..up.path_len]);
+
+    const root = fat.resolve_full_path(.Master, fs.bpb, deep.cluster, deep.path[0..deep.path_len], "../..") orelse return error.ResolveFailed;
+    try std.testing.expectEqualStrings("/", root.path[0..root.path_len]);
+    try std.testing.expectEqual(@as(u32, 0), root.cluster);
+}
+
+test "FAT12 resolve_full_path builds absolute paths without doubled separators" {
+    try testResolveFullPathNoDoubleSlash(.fat12);
+}
+
+test "FAT16 resolve_full_path builds absolute paths without doubled separators" {
+    try testResolveFullPathNoDoubleSlash(.fat16);
+}

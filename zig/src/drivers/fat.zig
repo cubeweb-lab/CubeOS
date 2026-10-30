@@ -33,6 +33,8 @@ pub const PathResolution = fat.PathResolution;
 pub const ResolvedPath = fat.ResolvedPath;
 
 pub const list_directory = fat.list_directory;
+pub const ListItem = fat.ListItem;
+pub const collect_entries = fat.collect_entries;
 pub const resolve_path = fat.resolve_path;
 pub const resolve_full_path = fat.resolve_full_path;
 pub const find_entry = fat.find_entry;
@@ -77,6 +79,7 @@ pub const fat_sync = fat.fat_sync;
 pub const fat_expand = fat.fat_expand;
 pub const fat_forward = fat.fat_forward;
 pub const fat_gets = fat.fat_gets;
+pub const fat_read = fat.fat_read;
 pub const fat_puts = fat.fat_puts;
 pub const fat_putc = fat.fat_putc;
 

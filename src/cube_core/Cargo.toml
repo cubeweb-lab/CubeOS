@@ -3,6 +3,9 @@ name = "cube_core"
 version = "1.0.0"
 edition = "2021"
 
+[features]
+kernel-debug = []
+
 [lib]
 name = "cube_core"
 crate-type = ["staticlib"]

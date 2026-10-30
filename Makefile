@@ -6,6 +6,8 @@ CC          ?= gcc
 LD          ?= ld
 QEMU        ?= qemu-system-x86_64
 ZIG         ?= zig
+# Cargo features for the kernel, e.g. make FEATURES=kernel-debug to run the boot-time FAT self-test
+FEATURES    ?=
 
 BUILD       := build
 KERNEL      := kernel.elf
@@ -65,7 +67,7 @@ FORCE:
 $(KERNEL_LIB): FORCE
 	cd src/cube_core && RUSTFLAGS="-C link-arg=-nostdlib -C relocation-model=static -C code-model=kernel" \
 		$(CARGO) build -Z build-std=core,compiler_builtins -Z build-std-features=compiler-builtins-mem \
-		--target $(TARGET) --release --target-dir ../../target
+		--target $(TARGET) --release --target-dir ../../target $(if $(FEATURES),--features $(FEATURES))
 
 $(ZIG_OBJ): FORCE
 	cd zig && $(ZIG) build --release=small

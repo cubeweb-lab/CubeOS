@@ -300,6 +300,27 @@ fn allocate_next_cluster(handle: *FileHandle) bool {
     return true;
 }
 
+// Binary read from the handle's offset. Returns the number of bytes copied, 0 at end of file.
+pub fn fat_read(handle: *FileHandle, buffer: [*]u8, max_len: u32) i32 {
+    const cluster_size = @as(u32, handle.bpb.sectors_per_cluster) * 512;
+    var sector_buf: [512]u8 = undefined;
+    var n: u32 = 0;
+
+    while (n < max_len and handle.offset < handle.size) {
+        if (handle.cluster < 2) break;
+        const win = sector_window(handle);
+        ata.read_sector(handle.drive, win.lba, &sector_buf);
+
+        const take = @min(@min(win.capacity, max_len - n), handle.size - handle.offset);
+        @memcpy((buffer + n)[0..take], sector_buf[win.off .. win.off + take]);
+        n += take;
+        handle.offset += take;
+
+        if (handle.offset % cluster_size == 0 and handle.offset < handle.size and !advance_cluster(handle)) break;
+    }
+    return @intCast(n);
+}
+
 pub fn fat_gets(handle: *FileHandle, buffer: [*]u8, max_len: u32) i32 {
     if (handle.offset >= handle.size) return -1;
 

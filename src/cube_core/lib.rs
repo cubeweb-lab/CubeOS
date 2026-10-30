@@ -243,6 +243,9 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
     serial::log_ok("Scheduler initialized");
     if let Some(ref mut logger) = vesa_log { logger.log("OK", "Scheduler initialized"); }
 
+    // syscall/sysret: EFER.SCE must be set before user code runs, or every `syscall` raises #UD
+    syscall::init_syscall(0);
+
     // 14. I/O APIC: клавиатура IRQ1 → вектор 0x21
     apic::ioapic_set_irq(1, 0x21, 0);
     serial::log_ok("I/O APIC IRQ1 → 0x21");
@@ -269,23 +272,23 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
     if ata.exists {
         log_both(&mut vesa_log, "OK", "ATA controller detected");
 
-        if fs.mount_fat32(&ata, 1) {
-            log_both(&mut vesa_log, "OK", "FAT32 filesystem mounted");
+        if fs.mount(&ata, 1) {
+            log_both(&mut vesa_log, "OK", "FAT volume mounted (Zig driver)");
+
+            if cfg!(feature = "kernel-debug") {
+                zigfs::self_test();
+            }
 
             let mut config_buf = [0u8; 4096];
-            if let Some(size) = fs.read_file(&ata, "/SYSTEM/CONFIG/BOOT.CFG", &mut config_buf) {
+            if let Some(size) = fs.read_file("/SYSTEM/CONFIG/BOOT.CFG", &mut config_buf) {
                 if let Ok(text) = core::str::from_utf8(&config_buf[..size]) {
                     log_both(&mut vesa_log, "OK", "Boot config loaded");
-
-                    if let Some(partition_lba) = fs.fat32.as_ref().map(|f| f.partition_start) {
-                        zigfs::verify_file(partition_lba, "/SYSTEM/CONFIG/BOOT.CFG", &config_buf[..size]);
-                    }
 
                     let cmdline = checks::config_cmdline(text);
 
                     if let Some(cmd) = cmdline {
                         log_both(&mut vesa_log, "INFO", "Launching program from cmdline...");
-                        match loader::exec_user(&ata, &fs, cmd, sched::Qos::Interactive) {
+                        match loader::exec_user(&fs, cmd, sched::Qos::Interactive) {
                             Some(pid) => {
                                 log_both(&mut vesa_log, "OK", "Program launched (user task)");
                                 let mut nb = [0u8; 20];

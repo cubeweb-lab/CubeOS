@@ -496,9 +496,13 @@ pub fn resolve_full_path(drive: ata.Drive, bpb: BPB, start_cluster: u32, start_p
             res.cluster = entry_cluster(entry);
             res.is_dir = (entry.attr & 0x10) != 0;
 
-            if (res.path_len + 1 + component.len < 256) {
-                res.path[res.path_len] = '/';
-                res.path_len += 1;
+            // The root path is already "/", so appending a component must not add a second separator.
+            const sep: usize = if (res.path_len > 0 and res.path[res.path_len - 1] == '/') 0 else 1;
+            if (res.path_len + sep + component.len < 256) {
+                if (sep == 1) {
+                    res.path[res.path_len] = '/';
+                    res.path_len += 1;
+                }
                 for (component, 0..) |c, k| {
                     res.path[res.path_len + k] = c;
                 }
@@ -509,7 +513,101 @@ pub fn resolve_full_path(drive: ata.Drive, bpb: BPB, start_cluster: u32, start_p
         }
     }
 
+    if (res.path_len == 0) {
+        res.path[0] = '/';
+        res.path_len = 1;
+    }
     return res;
+}
+
+pub const ListItem = extern struct {
+    name: [256]u8,
+    name_len: u32,
+    attr: u32,
+    size: u32,
+    cluster: u32,
+};
+
+// Collects the visible entries of a directory into `out` (no "." or ".."), decoding
+// long file names. Stops early when `out` is full.
+pub fn collect_entries(drive: ata.Drive, bpb: BPB, dir_cluster: u32, out: []ListItem) usize {
+    var count: usize = 0;
+    var lfn: LfnState = .{ .buf = @splat(0), .active = false, .checksum = 0 };
+
+    if (dir_cluster == 0 and bpb.fat_type != .FAT32) {
+        var sector = bpb.first_root_dir_sector;
+        while (sector < bpb.first_data_sector) : (sector += 1) {
+            if (!collect_sector(drive, sector, out, &count, &lfn)) break;
+        }
+        return count;
+    }
+
+    var current = if (dir_cluster == 0) bpb.root_cluster else dir_cluster;
+    const eof_val: u32 = switch (bpb.fat_type) {
+        .FAT12 => 0xFF8,
+        .FAT16 => 0xFFF8,
+        .FAT32 => 0x0FFFFFF8,
+        else => 0xFFF8,
+    };
+    while (current >= 2 and current < eof_val) {
+        const lba = bpb.first_data_sector + (current - 2) * bpb.sectors_per_cluster;
+        var s: u32 = 0;
+        while (s < bpb.sectors_per_cluster) : (s += 1) {
+            if (!collect_sector(drive, lba + s, out, &count, &lfn)) return count;
+        }
+        current = get_fat_entry(drive, bpb, current);
+    }
+    return count;
+}
+
+// Returns false at the end-of-directory marker or when `out` is full.
+fn collect_sector(drive: ata.Drive, sector: u32, out: []ListItem, count: *usize, lfn: *LfnState) bool {
+    var buffer: [512]u8 = undefined;
+    ata.read_sector(drive, sector, &buffer);
+
+    var i: u32 = 0;
+    while (i < 512) : (i += 32) {
+        if (buffer[i] == 0) {
+            lfn.active = false;
+            return false;
+        }
+        if (buffer[i] == 0xE5) {
+            lfn.active = false;
+            continue;
+        }
+        if (consume_lfn_entry(&buffer, @intCast(i), lfn)) continue;
+
+        const use_lfn = lfn.active;
+        lfn.active = false;
+
+        const attr = buffer[i + 11];
+        if ((attr & 0x08) != 0) continue; // volume label
+
+        var item: ListItem = undefined;
+        if (use_lfn) {
+            var len: usize = 0;
+            while (len < item.name.len and lfn.buf[len] != 0) : (len += 1) {
+                item.name[len] = lfn.buf[len];
+            }
+            item.name_len = @intCast(len);
+        } else {
+            const short = get_name_from_raw(buffer[i .. i + 32]);
+            @memset(&item.name, 0);
+            @memcpy(item.name[0..short.len], short.buf[0..short.len]);
+            item.name_len = @intCast(short.len);
+        }
+
+        const name = item.name[0..item.name_len];
+        if (common.std_mem_eql(name, ".") or common.std_mem_eql(name, "..")) continue;
+
+        if (count.* >= out.len) return false;
+        item.attr = attr;
+        item.size = @as(u32, buffer[i + 28]) | (@as(u32, buffer[i + 29]) << 8) | (@as(u32, buffer[i + 30]) << 16) | (@as(u32, buffer[i + 31]) << 24);
+        item.cluster = @as(u32, buffer[i + 26]) | (@as(u32, buffer[i + 27]) << 8) | (@as(u32, buffer[i + 20]) << 16) | (@as(u32, buffer[i + 21]) << 24);
+        out[count.*] = item;
+        count.* += 1;
+    }
+    return true;
 }
 
 pub fn resolve_path(drive: ata.Drive, bpb: BPB, start_dir: u32, path: []const u8) ?PathResolution {

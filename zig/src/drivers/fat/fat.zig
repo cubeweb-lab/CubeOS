@@ -37,6 +37,8 @@ pub const FatName = dir.FatName;
 pub const PathResolution = dir.PathResolution;
 pub const ResolvedPath = dir.ResolvedPath;
 pub const list_directory = dir.list_directory;
+pub const ListItem = dir.ListItem;
+pub const collect_entries = dir.collect_entries;
 pub const resolve_path = dir.resolve_path;
 pub const resolve_full_path = dir.resolve_full_path;
 pub const find_entry = dir.find_entry;
@@ -81,6 +83,7 @@ pub const fat_sync = file.fat_sync;
 pub const fat_expand = file.fat_expand;
 pub const fat_forward = file.fat_forward;
 pub const fat_gets = file.fat_gets;
+pub const fat_read = file.fat_read;
 pub const fat_puts = file.fat_puts;
 pub const fat_putc = file.fat_putc;
 

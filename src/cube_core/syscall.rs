@@ -1,5 +1,6 @@
 // src/cube_core/syscall.rs
 use core::arch::asm;
+use crate::zigfs::{self, DirItem, EMPTY_ITEM};
 
 const IA32_EFER:  u32 = 0xC0000080;
 const IA32_STAR:  u32 = 0xC0000081;
@@ -20,9 +21,6 @@ pub const SYS_UNLINK:   u64 = 34;
 pub const SYS_DEBUG:    u64 = 78;
 
 // open() flags
-const O_RDONLY:    u64 = 0o0;
-const O_WRONLY:    u64 = 0o1;
-const O_RDWR:      u64 = 0o2;
 const O_DIRECTORY: u64 = 0o200000;
 
 // file types
@@ -34,12 +32,16 @@ static mut USER_RSP:   u64 = 0;
 
 // Таблица fd
 const MAX_FD: usize = 16;
+const MAX_PATH: usize = 256;
+const MAX_DIR_ITEMS: usize = 64;
 
 #[derive(Copy, Clone)]
 enum FdKind {
     Free,
-    File { cluster: u32, size: u32, offset: u32 },
-    Dir  { cluster: u32 },
+    // Путь абсолютный, нормализованный через Zig
+    File { path: [u8; MAX_PATH], path_len: usize, size: u32, offset: u32 },
+    // pos — индекс следующей записи, которую вернёт getdents
+    Dir  { path: [u8; MAX_PATH], path_len: usize, pos: usize },
 }
 
 #[derive(Copy, Clone)]
@@ -47,29 +49,14 @@ struct Fd { kind: FdKind }
 
 static mut FDS: [Fd; MAX_FD] = [Fd { kind: FdKind::Free }; MAX_FD];
 
-// Текущая директория
+// Текущая директория: кластер (0 = корень) и абсолютный путь
 static mut CWD_CLUSTER: u32 = 0;
-static mut CWD_PATH:    [u8; 256] = [0; 256];
+static mut CWD_PATH:    [u8; MAX_PATH] = {
+    let mut path = [0u8; MAX_PATH];
+    path[0] = b'/';
+    path
+};
 static mut CWD_PATH_LEN: usize = 1;
-
-// Ссылки на FS и ATA
-static mut FS_PTR:  *const crate::fs::FSManager = core::ptr::null();
-static mut ATA_PTR: *const crate::ata::AtaDrive  = core::ptr::null();
-
-unsafe fn fs() -> &'static crate::fs::FSManager { &*FS_PTR }
-unsafe fn ata() -> &'static crate::ata::AtaDrive { &*ATA_PTR }
-
-pub fn set_fs_refs(fs: *const crate::fs::FSManager, ata: *const crate::ata::AtaDrive) {
-    unsafe {
-        FS_PTR = fs;
-        ATA_PTR = ata;
-        if let Some(ref f) = (*fs).fat32 {
-            CWD_CLUSTER = f.bpb.root_cluster;
-        }
-        CWD_PATH[0] = b'/';
-        CWD_PATH_LEN = 1;
-    }
-}
 
 unsafe fn wrmsr(msr: u32, val: u64) {
     let lo = val as u32;
@@ -82,6 +69,11 @@ unsafe fn rdmsr(msr: u32) -> u64 {
     let hi: u32;
     asm!("rdmsr", in("ecx") msr, out("eax") lo, out("edx") hi);
     ((hi as u64) << 32) | lo as u64
+}
+
+/// Stack the syscall entry switches to. The scheduler updates it on every switch to a user task.
+pub fn set_kernel_rsp(kernel_rsp: u64) {
+    unsafe { KERNEL_RSP = kernel_rsp };
 }
 
 pub fn init_syscall(kernel_rsp: u64) {
@@ -166,12 +158,17 @@ fn is_user_address(ptr: u64) -> bool {
     ptr <= 0x00007FFFFFFFFFFF
 }
 
+// Пользовательский буфер [ptr, ptr+len) целиком лежит в user-пространстве
+fn user_range_ok(ptr: u64, len: usize) -> bool {
+    len > 0 && ptr != 0 && is_user_address(ptr) && is_user_address(ptr + len as u64 - 1)
+}
+
 unsafe fn copy_user_str(ptr: u64, len: u64, out: &mut [u8]) -> Option<usize> {
     if ptr == 0 || len == 0 || len as usize > out.len() {
         return None;
     }
     // Защита от обращения к памяти ядра из Ring 3
-    if !is_user_address(ptr) || !is_user_address(ptr + len - 1) {
+    if !user_range_ok(ptr, len as usize) {
         return None;
     }
     let src = ptr as *const u8;
@@ -179,62 +176,6 @@ unsafe fn copy_user_str(ptr: u64, len: u64, out: &mut [u8]) -> Option<usize> {
         out[i] = *src.add(i);
     }
     Some(len as usize)
-}
-
-fn part_len(p: &[u8; 32]) -> usize {
-    p.iter().position(|&b| b == 0).unwrap_or(32)
-}
-
-unsafe fn resolve_path(path: &[u8]) -> Option<(u32, [u8; 11])> {
-    let fs = fs();
-    let fat = fs.fat32.as_ref()?;
-
-    if path == b"/" {
-        return Some((fat.bpb.root_cluster, *b"           "));
-    }
-
-    let mut dir_cluster = if path.first() == Some(&b'/') {
-        fat.bpb.root_cluster
-    } else {
-        CWD_CLUSTER
-    };
-
-    let mut parts: [[u8; 32]; 16] = [[0; 32]; 16];
-    let mut nparts = 0;
-    let mut cur_len = 0;
-    for &b in path {
-        if b == b'/' {
-            if cur_len > 0 { nparts += 1; cur_len = 0; }
-        } else if cur_len < 32 && nparts < 16 {
-            parts[nparts][cur_len] = b;
-            cur_len += 1;
-        }
-    }
-    if cur_len > 0 { nparts += 1; }
-    if nparts == 0 { return None; }
-
-    for i in 0..nparts.saturating_sub(1) {
-        let l = part_len(&parts[i]);
-        let comp = &parts[i][..l];
-        let name83 = crate::fs::fat32::Fat32::name_to_83(core::str::from_utf8(comp).ok()?)?;
-        let mut entries = [crate::fs::fat32::FatDirEntry::new(); 64];
-        let count = fat.list_dir_entries(ata(), dir_cluster, &mut entries);
-        let mut found = false;
-        for j in 0..count {
-            if entries[j].name == name83 && entries[j].is_directory() {
-                dir_cluster = entries[j].cluster();
-                found = true;
-                break;
-            }
-        }
-        if !found { return None; }
-    }
-
-    let last = nparts - 1;
-    let l = part_len(&parts[last]);
-    let comp = &parts[last][..l];
-    let name83 = crate::fs::fat32::Fat32::name_to_83(core::str::from_utf8(comp).ok()?)?;
-    Some((dir_cluster, name83))
 }
 
 unsafe fn fd_alloc() -> Option<usize> {
@@ -271,6 +212,11 @@ fn scancode_to_ascii(sc: u8) -> Option<u8> {
         let c = MAP[sc as usize];
         if c != 0 { Some(c) } else { None }
     } else { None }
+}
+
+// Копия текущего рабочего каталога (кластер и путь) для разрешения относительных путей
+unsafe fn cwd_snapshot() -> (u32, [u8; MAX_PATH], usize) {
+    (CWD_CLUSTER, CWD_PATH, CWD_PATH_LEN)
 }
 
 // === Главный dispatcher ===
@@ -315,29 +261,24 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 
             // Чтение из файлов
             if fd >= MAX_FD { return u64::MAX; }
+            if !user_range_ok(a2, a3 as usize) { return u64::MAX; }
 
             unsafe {
                 match FDS[fd].kind {
-                    FdKind::File { cluster, size, offset } => {
+                    FdKind::File { path, path_len, size, offset } => {
                         let remaining = size.saturating_sub(offset) as usize;
                         let to_read = (a3 as usize).min(remaining);
                         if to_read == 0 { return 0; }
-                        let fat = match fs().fat32.as_ref() {
-                            Some(f) => f,
-                            None => return u64::MAX,
-                        };
-                        let mut tmp = [0u8; 65536];
-                        if fat.read_file(ata(), cluster, &mut tmp, size).is_none() {
-                            return u64::MAX;
+                        let out = core::slice::from_raw_parts_mut(a2 as *mut u8, to_read);
+                        match zigfs::read(0, &path[..path_len], offset, out) {
+                            Some(n) => {
+                                if let FdKind::File { ref mut offset, .. } = FDS[fd].kind {
+                                    *offset += n as u32;
+                                }
+                                n as u64
+                            }
+                            None => u64::MAX,
                         }
-                        let dst = a2 as *mut u8;
-                        for i in 0..to_read {
-                            *dst.add(i) = tmp[offset as usize + i];
-                        }
-                        if let FdKind::File { ref mut offset, .. } = FDS[fd].kind {
-                            *offset += to_read as u32;
-                        }
-                        to_read as u64
                     }
                     FdKind::Dir { .. } => 0,
                     FdKind::Free => u64::MAX,
@@ -347,49 +288,33 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
         SYS_OPEN => {
             // a1 = flags, a2 = path_ptr, a3 = path_len
             if a2 == 0 || a3 == 0 { return u64::MAX; }
-            let mut pathbuf = [0u8; 256];
+            let mut pathbuf = [0u8; MAX_PATH];
             let pathlen = match unsafe { copy_user_str(a2, a3, &mut pathbuf) } {
                 Some(n) => n, None => return u64::MAX,
             };
-            let path = &pathbuf[..pathlen];
             unsafe {
-                let resolved = match resolve_path(path) { Some(r) => r, None => return u64::MAX };
-                let (dir_cluster, name83) = resolved;
-                let fat = match fs().fat32.as_ref() { Some(f) => f, None => return u64::MAX };
+                let (cwd_cluster, cwd_path, cwd_len) = cwd_snapshot();
+                let resolved = match zigfs::resolve(cwd_cluster, &cwd_path[..cwd_len], &pathbuf[..pathlen]) {
+                    Some(r) => r,
+                    None => return u64::MAX,
+                };
+                let abs_len = resolved.path_len as usize;
+                let stat = match zigfs::stat(0, &resolved.path[..abs_len]) {
+                    Some(s) => s,
+                    None => return u64::MAX,
+                };
+                let fd = match fd_alloc() {
+                    Some(fd) => fd,
+                    None => return u64::MAX,
+                };
 
-                if dir_cluster == fat.bpb.root_cluster && name83 == *b"           " {
-                    if let Some(fd) = fd_alloc() {
-                        FDS[fd].kind = FdKind::Dir { cluster: fat.bpb.root_cluster };
-                        return fd as u64;
-                    }
-                    return u64::MAX;
+                if stat.is_dir != 0 {
+                    FDS[fd].kind = FdKind::Dir { path: resolved.path, path_len: abs_len, pos: 0 };
+                } else {
+                    if a1 & O_DIRECTORY != 0 { return u64::MAX; }
+                    FDS[fd].kind = FdKind::File { path: resolved.path, path_len: abs_len, size: stat.size, offset: 0 };
                 }
-
-                let mut entries = [crate::fs::fat32::FatDirEntry::new(); 64];
-                let count = fat.list_dir_entries(ata(), dir_cluster, &mut entries);
-                for j in 0..count {
-                    if entries[j].name == name83 {
-                        if entries[j].is_directory() {
-                            if a1 & O_DIRECTORY != 0 || a1 & O_RDONLY != 0 {
-                                if let Some(fd) = fd_alloc() {
-                                    FDS[fd].kind = FdKind::Dir { cluster: entries[j].cluster() };
-                                    return fd as u64;
-                                }
-                            }
-                        } else {
-                            if let Some(fd) = fd_alloc() {
-                                FDS[fd].kind = FdKind::File {
-                                    cluster: entries[j].cluster(),
-                                    size: entries[j].size,
-                                    offset: 0,
-                                };
-                                return fd as u64;
-                            }
-                        }
-                        return u64::MAX;
-                    }
-                }
-                u64::MAX
+                fd as u64
             }
         }
         SYS_CLOSE => {
@@ -400,118 +325,97 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
         }
         SYS_GETDENTS => {
             let fd = a1 as usize;
-            if fd >= MAX_FD || a2 == 0 || a3 == 0 { return u64::MAX; }
+            if fd >= MAX_FD || !user_range_ok(a2, a3 as usize) { return u64::MAX; }
             unsafe {
-                let cluster = match FDS[fd].kind {
-                    FdKind::Dir { cluster } => cluster,
+                let (path, path_len, pos) = match FDS[fd].kind {
+                    FdKind::Dir { path, path_len, pos } => (path, path_len, pos),
                     _ => return u64::MAX,
                 };
-                let fat = match fs().fat32.as_ref() { Some(f) => f, None => return u64::MAX };
-                let mut entries = [crate::fs::fat32::FatDirEntry::new(); 64];
-                let count = fat.list_dir_entries(ata(), cluster, &mut entries);
+                let mut items = [EMPTY_ITEM; MAX_DIR_ITEMS];
+                let count = match zigfs::list(0, &path[..path_len], &mut items) {
+                    Some(n) => n,
+                    None => return u64::MAX,
+                };
                 let dst = a2 as *mut u8;
                 let max = a3 as usize;
                 let mut written = 0usize;
-                for j in 0..count {
-                    let e = &entries[j];
-                    let mut name = [0u8; 13];
-                    let nlen = e.name_to_buf(&mut name);
+                let mut next = pos;
+                for j in pos..count {
+                    let e: &DirItem = &items[j];
+                    let nlen = e.name_len as usize;
                     let reclen = (19 + nlen + 1 + 7) & !7;
                     if written + reclen > max { break; }
 
                     let ent = dst.add(written);
-                    *(ent as *mut u64) = e.cluster() as u64;
+                    *(ent as *mut u64) = e.cluster as u64;
                     *((ent.add(8)) as *mut u64) = j as u64;
                     *((ent.add(16)) as *mut u16) = reclen as u16;
-                    *(ent.add(18)) = if e.is_directory() { DT_DIR } else { DT_REG };
-                    for i in 0..nlen { *(ent.add(19 + i)) = name[i]; }
+                    *(ent.add(18)) = if e.attr & 0x10 != 0 { DT_DIR } else { DT_REG };
+                    for i in 0..nlen { *(ent.add(19 + i)) = e.name[i]; }
                     *(ent.add(19 + nlen)) = 0;
                     written += reclen;
+                    next = j + 1;
+                }
+                if let FdKind::Dir { ref mut pos, .. } = FDS[fd].kind {
+                    *pos = next;
                 }
                 written as u64
             }
         }
         SYS_GETCWD => {
-            if a2 == 0 || a3 == 0 { return u64::MAX; }
+            // a1 = buf_ptr, a2 = len (matches cube_syscall::getcwd)
+            if !user_range_ok(a1, a2 as usize) { return u64::MAX; }
             unsafe {
-                let dst = a2 as *mut u8;
-                let len = a3 as usize;
+                let dst = a1 as *mut u8;
+                let len = a2 as usize;
                 let to_copy = CWD_PATH_LEN.min(len);
                 for i in 0..to_copy { *dst.add(i) = CWD_PATH[i]; }
                 to_copy as u64
             }
         }
         SYS_CHDIR => {
-            if a2 == 0 || a3 == 0 { return u64::MAX; }
-            let mut pathbuf = [0u8; 256];
-            let pathlen = match unsafe { copy_user_str(a2, a3, &mut pathbuf) } {
+            // a1 = path_ptr, a2 = len (matches cube_syscall::chdir)
+            if a1 == 0 || a2 == 0 { return u64::MAX; }
+            let mut pathbuf = [0u8; MAX_PATH];
+            let pathlen = match unsafe { copy_user_str(a1, a2, &mut pathbuf) } {
                 Some(n) => n, None => return u64::MAX,
             };
-            let path = &pathbuf[..pathlen];
             unsafe {
-                if path == b".." {
-                    let fat = match fs().fat32.as_ref() { Some(f) => f, None => return u64::MAX };
-                    let mut entries = [crate::fs::fat32::FatDirEntry::new(); 64];
-                    let count = fat.list_dir_entries(ata(), CWD_CLUSTER, &mut entries);
-                    for j in 0..count {
-                        if entries[j].name == *b"..         " {
-                            CWD_CLUSTER = if entries[j].cluster() == 0 {
-                                fat.bpb.root_cluster
-                            } else { entries[j].cluster() };
-                            let mut i = CWD_PATH_LEN;
-                            while i > 1 && CWD_PATH[i - 1] != b'/' { i -= 1; }
-                            CWD_PATH_LEN = i;
-                            return 0;
-                        }
-                    }
-                    return u64::MAX;
-                }
-                let resolved = match resolve_path(path) { Some(r) => r, None => return u64::MAX };
-                let (dir_cluster, name83) = resolved;
-                let fat = match fs().fat32.as_ref() { Some(f) => f, None => return u64::MAX };
-                let mut entries = [crate::fs::fat32::FatDirEntry::new(); 64];
-                let count = fat.list_dir_entries(ata(), dir_cluster, &mut entries);
-                for j in 0..count {
-                    if entries[j].name == name83 && entries[j].is_directory() {
-                        CWD_CLUSTER = entries[j].cluster();
-                        if CWD_PATH_LEN + 1 + pathlen <= CWD_PATH.len() {
-                            CWD_PATH[CWD_PATH_LEN] = b'/';
-                            for i in 0..pathlen { CWD_PATH[CWD_PATH_LEN + 1 + i] = path[i]; }
-                            CWD_PATH_LEN += 1 + pathlen;
-                        }
-                        return 0;
-                    }
-                }
-                u64::MAX
+                let (cwd_cluster, cwd_path, cwd_len) = cwd_snapshot();
+                let resolved = match zigfs::resolve(cwd_cluster, &cwd_path[..cwd_len], &pathbuf[..pathlen]) {
+                    Some(r) => r,
+                    None => return u64::MAX,
+                };
+                if resolved.is_dir == 0 { return u64::MAX; }
+                CWD_CLUSTER = resolved.cluster;
+                CWD_PATH = resolved.path;
+                CWD_PATH_LEN = resolved.path_len as usize;
+                0
             }
         }
         SYS_MKDIR => {
             // a1 = path_ptr, a2 = len, a3 = mode
             if a1 == 0 || a2 == 0 { return u64::MAX; }
-            let mut pathbuf = [0u8; 256];
+            let mut pathbuf = [0u8; MAX_PATH];
             let pathlen = match unsafe { copy_user_str(a1, a2, &mut pathbuf) } {
                 Some(n) => n, None => return u64::MAX,
             };
-            let path = &pathbuf[..pathlen];
             unsafe {
-                let resolved = match resolve_path(path) { Some(r) => r, None => return u64::MAX };
-                let (dir_cluster, name83) = resolved;
-                let fat = match fs().fat32.as_ref() { Some(f) => f, None => return u64::MAX };
-                if fat.create_dir(ata(), dir_cluster, &name83).is_some() { 0 } else { u64::MAX }
+                if zigfs::mkdir(CWD_CLUSTER, &pathbuf[..pathlen]) { 0 } else { u64::MAX }
             }
         }
         SYS_UNLINK => {
             if a1 == 0 || a2 == 0 { return u64::MAX; }
-            let mut pathbuf = [0u8; 256];
+            let mut pathbuf = [0u8; MAX_PATH];
             let pathlen = match unsafe { copy_user_str(a1, a2, &mut pathbuf) } {
                 Some(n) => n, None => return u64::MAX,
             };
-            let path = &pathbuf[..pathlen];
             unsafe {
-                let resolved = match resolve_path(path) { Some(r) => r, None => return u64::MAX };
-                let (dir_cluster, name83) = resolved;
-                let fat = match fs().fat32.as_ref() { Some(f) => f, None => return u64::MAX };
-                if fat.delete_file(ata(), dir_cluster, &name83) { 0 } else { u64::MAX }
+                // unlink removes only files; directories go through rmdir semantics
+                if let Some(st) = zigfs::stat(CWD_CLUSTER, &pathbuf[..pathlen]) {
+                    if st.is_dir != 0 { return u64::MAX; }
+                }
+                if zigfs::unlink(CWD_CLUSTER, &pathbuf[..pathlen]) { 0 } else { u64::MAX }
             }
         }
         SYS_DEBUG => {
