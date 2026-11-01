@@ -55,6 +55,7 @@ extern "C" {
     fn zig_fat_mkdir(start_dir: u32, path: *const u8, path_len: usize) -> bool;
     fn zig_fat_unlink(start_dir: u32, path: *const u8, path_len: usize) -> bool;
     fn zig_fat_rmdir(start_dir: u32, path: *const u8, path_len: usize, recursive: bool) -> bool;
+    fn zig_fat_rename(start_dir: u32, old: *const u8, old_len: usize, new: *const u8, new_len: usize) -> bool;
 }
 
 #[no_mangle]
@@ -135,6 +136,10 @@ pub fn mkdir(start_dir: u32, path: &[u8]) -> bool {
 
 pub fn unlink(start_dir: u32, path: &[u8]) -> bool {
     unsafe { zig_fat_unlink(start_dir, path.as_ptr(), path.len()) }
+}
+
+pub fn rename(start_dir: u32, old: &[u8], new: &[u8]) -> bool {
+    unsafe { zig_fat_rename(start_dir, old.as_ptr(), old.len(), new.as_ptr(), new.len()) }
 }
 
 #[allow(dead_code)] // used by the upcoming directory commands

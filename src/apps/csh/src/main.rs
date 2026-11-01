@@ -82,17 +82,96 @@ fn tokenize<'a>(line: &'a str, args: &mut [&'a str; MAX_ARGS]) -> usize {
 }
 
 fn cmd_help() {
-    out("commands: help, echo, pwd, cd <dir>, ls [dir], cat <file>, mkdir <dir>, rm <file>, exit\n");
+    out("commands: help, echo [text] [> file | >> file], pwd, cd <dir>, ls [dir], cat <file>,\n");
+    out("          touch <file>, cp <src> <dst>, mv <src> <dst>, mkdir <dir>, rm <file>, exit\n");
+}
+
+fn write_text(fd: isize, args: &[&str]) {
+    for (i, arg) in args.iter().enumerate() {
+        if i > 0 {
+            sys::write(fd as usize, b" ");
+        }
+        sys::write(fd as usize, arg.as_bytes());
+    }
+    sys::write(fd as usize, b"\n");
 }
 
 fn cmd_echo(args: &[&str]) {
-    for (i, arg) in args.iter().enumerate() {
-        if i > 0 {
-            out(" ");
+    // "echo text > file" truncates the file, "echo text >> file" appends to it.
+    if let Some(k) = args.iter().position(|a| *a == ">" || *a == ">>") {
+        let target = match args.get(k + 1) {
+            Some(t) => *t,
+            None => {
+                err("echo: missing file after redirection\n");
+                return;
+            }
+        };
+        let flags = sys::O_WRONLY | sys::O_CREAT | if args[k] == ">>" { sys::O_APPEND } else { sys::O_TRUNC };
+        let fd = sys::open(target.as_bytes(), flags);
+        if fd < 0 {
+            err("echo: cannot write '");
+            err(target);
+            err("'\n");
+            return;
         }
-        out(arg);
+        write_text(fd, &args[..k]);
+        sys::close(fd as usize);
+        return;
     }
-    out("\n");
+    write_text(sys::STDOUT as isize, args);
+}
+
+fn cmd_touch(path: &str) {
+    let fd = sys::open(path.as_bytes(), sys::O_WRONLY | sys::O_CREAT);
+    if fd < 0 {
+        err("touch: cannot touch '");
+        err(path);
+        err("'\n");
+        return;
+    }
+    sys::close(fd as usize);
+}
+
+fn cmd_cp(src: &str, dst: &str) {
+    let input = sys::open(src.as_bytes(), sys::O_RDONLY);
+    if input < 0 {
+        err("cp: cannot read '");
+        err(src);
+        err("': no such file\n");
+        return;
+    }
+    let output = sys::open(dst.as_bytes(), sys::O_WRONLY | sys::O_CREAT | sys::O_TRUNC);
+    if output < 0 {
+        sys::close(input as usize);
+        err("cp: cannot write '");
+        err(dst);
+        err("'\n");
+        return;
+    }
+    let mut buf = [0u8; 512];
+    loop {
+        let n = sys::read(input as usize, &mut buf);
+        if n <= 0 {
+            break;
+        }
+        let n = n as usize;
+        if sys::write(output as usize, &buf[..n]) != n as isize {
+            err("cp: copy limit reached (4 KiB per file)\n");
+            break;
+        }
+    }
+    sys::close(output as usize);
+    sys::close(input as usize);
+}
+
+fn cmd_mv(src: &str, dst: &str) {
+    if sys::rename(src.as_bytes(), dst.as_bytes()) < 0 {
+        err("mv: cannot move '");
+        err(src);
+        err("' to '");
+        err(dst);
+        err("'\n");
+    }
 }
 
 fn cmd_pwd() {
@@ -197,6 +276,18 @@ fn run(args: &[&str]) -> bool {
                 }
             }
             None => err("usage: rm <file>\n"),
+        },
+        "touch" => match args.get(1) {
+            Some(path) => cmd_touch(path),
+            None => err("usage: touch <file>\n"),
+        },
+        "cp" => match (args.get(1), args.get(2)) {
+            (Some(src), Some(dst)) => cmd_cp(src, dst),
+            _ => err("usage: cp <src> <dst>\n"),
+        },
+        "mv" => match (args.get(1), args.get(2)) {
+            (Some(src), Some(dst)) => cmd_mv(src, dst),
+            _ => err("usage: mv <src> <dst>\n"),
         },
         "exit" => return false,
         other => {

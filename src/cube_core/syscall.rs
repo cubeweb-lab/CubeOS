@@ -18,9 +18,15 @@ pub const SYS_GETCWD:   u64 = 12;
 pub const SYS_CHDIR:    u64 = 13;
 pub const SYS_MKDIR:    u64 = 14;
 pub const SYS_UNLINK:   u64 = 34;
+pub const SYS_RENAME:   u64 = 82;
 pub const SYS_DEBUG:    u64 = 78;
 
 // open() flags
+const O_WRONLY:    u64 = 0o1;
+const O_RDWR:      u64 = 0o2;
+const O_CREAT:     u64 = 0o100;
+const O_TRUNC:     u64 = 0o1000;
+const O_APPEND:    u64 = 0o2000;
 const O_DIRECTORY: u64 = 0o200000;
 
 // file types
@@ -39,6 +45,10 @@ const MAX_DIR_ITEMS: usize = 64;
 // so it lives in static memory. Only getdents uses it, and the kernel runs one syscall at a time here.
 static mut DIR_ITEMS: [DirItem; MAX_DIR_ITEMS] = [EMPTY_ITEM; MAX_DIR_ITEMS];
 
+// Files open for writing are edited in memory and written back on close. Each fd owns one buffer.
+const WRITE_LIMIT: usize = 4096;
+static mut WRITE_BUF: [[u8; WRITE_LIMIT]; MAX_FD] = [[0; WRITE_LIMIT]; MAX_FD];
+
 #[derive(Copy, Clone)]
 enum FdKind {
     Free,
@@ -46,6 +56,8 @@ enum FdKind {
     File { path: [u8; MAX_PATH], path_len: usize, size: u32, offset: u32 },
     // pos — индекс следующей записи, которую вернёт getdents
     Dir  { path: [u8; MAX_PATH], path_len: usize, pos: usize },
+    // size — длина буфера, pos — текущая позиция записи
+    Write { path: [u8; MAX_PATH], path_len: usize, size: usize, pos: usize },
 }
 
 #[derive(Copy, Clone)]
@@ -227,12 +239,113 @@ unsafe fn cwd_snapshot() -> (u32, [u8; MAX_PATH], usize) {
     (CWD_CLUSTER, CWD_PATH, CWD_PATH_LEN)
 }
 
+// Opens a file for writing. O_CREAT creates it when missing; without O_TRUNC the existing contents are kept.
+unsafe fn open_for_write(flags: u64, input: &[u8]) -> u64 {
+    let (cwd_cluster, cwd_path, cwd_len) = cwd_snapshot();
+    if zigfs::resolve(cwd_cluster, &cwd_path[..cwd_len], input).is_none() {
+        if flags & O_CREAT == 0 { return u64::MAX; }
+        if !zigfs::write_file(cwd_cluster, input, &[]) { return u64::MAX; }
+    }
+    let resolved = match zigfs::resolve(cwd_cluster, &cwd_path[..cwd_len], input) {
+        Some(r) => r,
+        None => return u64::MAX,
+    };
+    let abs_len = resolved.path_len as usize;
+    let stat = match zigfs::stat(0, &resolved.path[..abs_len]) {
+        Some(s) => s,
+        None => return u64::MAX,
+    };
+    if stat.is_dir != 0 || stat.size as usize > WRITE_LIMIT { return u64::MAX; }
+    let fd = match fd_alloc() {
+        Some(fd) => fd,
+        None => return u64::MAX,
+    };
+
+    let mut size = 0usize;
+    if flags & O_TRUNC == 0 && stat.size > 0 {
+        let write_bufs = &mut *core::ptr::addr_of_mut!(WRITE_BUF);
+        let buf = &mut write_bufs[fd][..stat.size as usize];
+        match zigfs::read(0, &resolved.path[..abs_len], 0, buf) {
+            Some(n) => size = n,
+            None => return u64::MAX,
+        }
+    }
+    let pos = if flags & O_APPEND != 0 { size } else { 0 };
+    FDS[fd].kind = FdKind::Write { path: resolved.path, path_len: abs_len, size, pos };
+    fd as u64
+}
+
+// Copies user bytes into the fd's buffer at its position and advances the position.
+unsafe fn write_file_fd(fd: usize, ptr: u64, len: u64) -> u64 {
+    if fd >= MAX_FD || len == 0 || !user_range_ok(ptr, len as usize) { return u64::MAX; }
+    let (pos, size) = match FDS[fd].kind {
+        FdKind::Write { pos, size, .. } => (pos, size),
+        _ => return u64::MAX,
+    };
+    let n = len as usize;
+    if pos + n > WRITE_LIMIT { return u64::MAX; }
+    let src = core::slice::from_raw_parts(ptr as *const u8, n);
+    let write_bufs = &mut *core::ptr::addr_of_mut!(WRITE_BUF);
+    write_bufs[fd][pos..pos + n].copy_from_slice(src);
+    let new_pos = pos + n;
+    if let FdKind::Write { ref mut pos, ref mut size, .. } = FDS[fd].kind {
+        *pos = new_pos;
+        *size = (*size).max(new_pos);
+    }
+    n as u64
+}
+
+// Writes the buffer of a file opened for writing back to the volume. Other fds have nothing to flush.
+unsafe fn flush_write_fd(fd: usize) -> u64 {
+    let (path, path_len, size) = match FDS[fd].kind {
+        FdKind::Write { path, path_len, size, .. } => (path, path_len, size),
+        _ => return 0,
+    };
+    let write_bufs = &*core::ptr::addr_of!(WRITE_BUF);
+    let data = &write_bufs[fd][..size];
+    if zigfs::write_file(0, &path[..path_len], data) { 0 } else { u64::MAX }
+}
+
+// Shift state from the make/break codes of the two shift keys.
+static mut SHIFT_DOWN: bool = false;
+
+// Like scancode_to_ascii, but tracks Shift so capital letters and symbols such as '>' come out right.
+fn key_to_ascii(sc: u8) -> Option<u8> {
+    match sc {
+        0x2A | 0x36 => {
+            unsafe { SHIFT_DOWN = true };
+            return None;
+        }
+        0xAA | 0xB6 => {
+            unsafe { SHIFT_DOWN = false };
+            return None;
+        }
+        _ => {}
+    }
+    let c = scancode_to_ascii(sc)?;
+    if unsafe { SHIFT_DOWN } { Some(shifted(c)) } else { Some(c) }
+}
+
+fn shifted(c: u8) -> u8 {
+    match c {
+        b'a'..=b'z' => c - 32,
+        b'1' => b'!', b'2' => b'@', b'3' => b'#', b'4' => b'$', b'5' => b'%',
+        b'6' => b'^', b'7' => b'&', b'8' => b'*', b'9' => b'(', b'0' => b')',
+        b'-' => b'_', b'=' => b'+', b'[' => b'{', b']' => b'}', b'\\' => b'|',
+        b';' => b':', b'\'' => b'"', b'`' => b'~', b',' => b'<', b'.' => b'>', b'/' => b'?',
+        _ => c,
+    }
+}
+
 // === Главный dispatcher ===
 
 #[no_mangle]
 extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     match num {
         SYS_WRITE => {
+            if a1 >= 3 {
+                return unsafe { write_file_fd(a1 as usize, a2, a3) };
+            }
             if a1 <= 2 && a2 != 0 && a3 > 0 && a3 <= 0x10000 {
                 let ptr = a2 as *const u8;
                 for i in 0..a3 as usize {
@@ -254,7 +367,7 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                 // only here, after the kernel stack is in use: IRQs never land on the user stack.
                 while n < max {
                     if let Some(sc) = crate::interrupts::keyboard_pop() {
-                        if let Some(ch) = scancode_to_ascii(sc) {
+                        if let Some(ch) = key_to_ascii(sc) {
                             unsafe { *buf.add(n) = ch; }
                             n += 1;
                             unsafe { crate::serial::send_byte(ch); }
@@ -291,6 +404,7 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                         }
                     }
                     FdKind::Dir { .. } => 0,
+                    FdKind::Write { .. } => u64::MAX,
                     FdKind::Free => u64::MAX,
                 }
             }
@@ -302,6 +416,9 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             let pathlen = match unsafe { copy_user_str(a2, a3, &mut pathbuf) } {
                 Some(n) => n, None => return u64::MAX,
             };
+            if a1 & (O_WRONLY | O_RDWR) != 0 {
+                return unsafe { open_for_write(a1, &pathbuf[..pathlen]) };
+            }
             unsafe {
                 let (cwd_cluster, cwd_path, cwd_len) = cwd_snapshot();
                 let resolved = match zigfs::resolve(cwd_cluster, &cwd_path[..cwd_len], &pathbuf[..pathlen]) {
@@ -329,9 +446,28 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
         }
         SYS_CLOSE => {
             if a1 < MAX_FD as u64 {
-                unsafe { FDS[a1 as usize].kind = FdKind::Free; return 0; }
+                let fd = a1 as usize;
+                let result = unsafe { flush_write_fd(fd) };
+                unsafe { FDS[fd].kind = FdKind::Free };
+                return result;
             }
             u64::MAX
+        }
+        SYS_RENAME => {
+            // a1 = ptr to "old\0new", a2 = total length (matches cube_syscall::rename)
+            if a1 == 0 || a2 == 0 { return u64::MAX; }
+            let mut buf = [0u8; 512];
+            let len = match unsafe { copy_user_str(a1, a2, &mut buf) } {
+                Some(n) => n, None => return u64::MAX,
+            };
+            let sep = match buf[..len].iter().position(|&b| b == 0) {
+                Some(i) => i, None => return u64::MAX,
+            };
+            let old = &buf[..sep];
+            let new = &buf[sep + 1..len];
+            unsafe {
+                if zigfs::rename(CWD_CLUSTER, old, new) { 0 } else { u64::MAX }
+            }
         }
         SYS_GETDENTS => {
             let fd = a1 as usize;

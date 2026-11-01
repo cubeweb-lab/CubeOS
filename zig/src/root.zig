@@ -131,3 +131,8 @@ pub export fn zig_fat_rmdir(start_dir: u32, path: [*]const u8, path_len: usize, 
     const bpb = mounted orelse return false;
     return fat.delete_directory(.Master, bpb, start_dir, path[0..path_len], recursive);
 }
+
+pub export fn zig_fat_rename(start_dir: u32, old: [*]const u8, old_len: usize, new: [*]const u8, new_len: usize) bool {
+    const bpb = mounted orelse return false;
+    return fat.rename_file(.Master, bpb, start_dir, old[0..old_len], new[0..new_len]);
+}

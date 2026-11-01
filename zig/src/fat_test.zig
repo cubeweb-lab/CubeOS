@@ -432,3 +432,25 @@ test "FAT12 resolve_full_path builds absolute paths without doubled separators" 
 test "FAT16 resolve_full_path builds absolute paths without doubled separators" {
     try testResolveFullPathNoDoubleSlash(.fat16);
 }
+
+fn testRenameFile(kind: Kind) !void {
+    const allocator = std.testing.allocator;
+    var fs = try setup(allocator, kind);
+    defer fs.deinit();
+
+    try std.testing.expect(fat.write_file(.Master, fs.bpb, 0, "OLD.TXT", "data"));
+    try std.testing.expect(fat.rename_file(.Master, fs.bpb, 0, "OLD.TXT", "NEW.TXT"));
+    try std.testing.expect(fat.find_entry_literal(.Master, fs.bpb, 0, "OLD.TXT") == null);
+
+    const back = try readAll(allocator, fs.bpb, "NEW.TXT");
+    defer allocator.free(back);
+    try std.testing.expectEqualStrings("data", back);
+}
+
+test "FAT12 rename_file moves the entry to the new name" {
+    try testRenameFile(.fat12);
+}
+
+test "FAT16 rename_file moves the entry to the new name" {
+    try testRenameFile(.fat16);
+}

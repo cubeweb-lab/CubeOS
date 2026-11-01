@@ -110,3 +110,15 @@ pub fn mkdir(path: &[u8], mode: usize) -> isize {
 pub fn unlink(path: &[u8]) -> isize {
     syscall2(SYS_UNLINK, path.as_ptr() as usize, path.len()) as isize
 }
+
+// The kernel takes both paths in one buffer, "old\0new", so the call stays within three arguments.
+pub fn rename(old: &[u8], new: &[u8]) -> isize {
+    let mut buf = [0u8; 512];
+    if old.len() + 1 + new.len() > buf.len() {
+        return -1;
+    }
+    buf[..old.len()].copy_from_slice(old);
+    buf[old.len() + 1..old.len() + 1 + new.len()].copy_from_slice(new);
+    let total = old.len() + 1 + new.len();
+    syscall2(SYS_RENAME, buf.as_ptr() as usize, total) as isize
+}
