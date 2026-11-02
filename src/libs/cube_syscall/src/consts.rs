@@ -8,6 +8,7 @@ pub const SYS_GETCWD:   usize = 12;
 pub const SYS_CHDIR:    usize = 13;
 pub const SYS_MKDIR:    usize = 14;
 pub const SYS_UNLINK:   usize = 34;
+pub const SYS_RENAME:   usize = 82;
 pub const SYS_FSTAT:    usize = 50;
 pub const SYS_DEBUG:    usize = 78;
 

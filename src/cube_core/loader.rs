@@ -1,4 +1,3 @@
-use crate::ata::AtaDrive;
 use crate::fs::FSManager;
 use crate::vmm::{AddressSpace, USER_LIMIT};
 use crate::sched::{self, Qos};
@@ -15,13 +14,12 @@ const USER_STACK_TOP: u64 = USER_LIMIT - 0x10000;   // 0x7FFF_FFFF_0000
 const USER_STACK_PAGES: u64 = 4;
 
 pub fn exec_user(
-    ata: &AtaDrive,
     fs: &FSManager,
     path: &str,
     qos: Qos,
 ) -> Option<u64> {
     unsafe {
-        let size = fs.read_file(ata, path, &mut PROGRAM_BUF.0)?;
+        let size = fs.read_file(path, &mut PROGRAM_BUF.0)?;
         if size < 4 || PROGRAM_BUF.0[0..4] != *b"\x7fELF" {
             crate::serial::send_string("[LOADER] Invalid ELF magic\n");
             return None;

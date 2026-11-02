@@ -5,6 +5,9 @@ NASM        ?= nasm
 CC          ?= gcc
 LD          ?= ld
 QEMU        ?= qemu-system-x86_64
+ZIG         ?= zig
+# Cargo features for the kernel, e.g. make FEATURES=kernel-debug to run the boot-time FAT self-test
+FEATURES    ?=
 
 BUILD       := build
 KERNEL      := kernel.elf
@@ -12,6 +15,7 @@ ISO         := cubeos.iso
 HDD         := cubeos.img
 CSH         := target/apps/$(TARGET)/release/csh
 KERNEL_LIB  := target/$(TARGET)/release/libcube_core.a
+ZIG_OBJ     := zig/zig-out/lib/cube_zig.o
 
 HDD_SIZE_MB := 512
 # Partition 1 is the boot FAT32 volume, partition 2 is the system volume that the kernel mounts (MBR index 1).
@@ -63,10 +67,13 @@ FORCE:
 $(KERNEL_LIB): FORCE
 	cd src/cube_core && RUSTFLAGS="-C link-arg=-nostdlib -C relocation-model=static -C code-model=kernel" \
 		$(CARGO) build -Z build-std=core,compiler_builtins -Z build-std-features=compiler-builtins-mem \
-		--target $(TARGET) --release --target-dir ../../target
+		--target $(TARGET) --release --target-dir ../../target $(if $(FEATURES),--features $(FEATURES))
 
-$(KERNEL): $(BUILD)/boot.o $(BUILD)/ata.o $(KERNEL_LIB) linker.ld
-	$(LD) -T linker.ld -o $@ $(BUILD)/boot.o $(BUILD)/ata.o $(KERNEL_LIB) --gc-sections -z max-page-size=0x1000
+$(ZIG_OBJ): FORCE
+	cd zig && $(ZIG) build --release=small
+
+$(KERNEL): $(BUILD)/boot.o $(BUILD)/ata.o $(ZIG_OBJ) $(KERNEL_LIB) linker.ld
+	$(LD) -T linker.ld -o $@ $(BUILD)/boot.o $(BUILD)/ata.o $(ZIG_OBJ) $(KERNEL_LIB) --gc-sections -z max-page-size=0x1000
 
 $(CSH): FORCE
 	cd src/apps/csh && RUSTFLAGS="-C link-arg=-Tlinker.ld -C relocation-model=static -C code-model=large" \
@@ -90,4 +97,4 @@ run-hdd: hdd
 	$(QEMU) -drive file=$(HDD),format=raw $(QEMU_FLAGS)
 
 clean:
-	rm -rf $(BUILD) target $(KERNEL) $(ISO) $(HDD)
+	rm -rf $(BUILD) target $(KERNEL) $(ISO) $(HDD) zig/zig-out zig/.zig-cache

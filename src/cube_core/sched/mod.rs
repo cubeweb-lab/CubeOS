@@ -186,6 +186,7 @@ pub fn tick() {
         if RQ.tasks[next].is_user() {
             let kernel_top = RQ.tasks[next].stack_base + (RQ.tasks[next].stack_pages as u64) * 4096;
             crate::tss::set_rsp0(kernel_top);
+            crate::syscall::set_kernel_rsp(kernel_top);
         }
 
         context::context_switch(

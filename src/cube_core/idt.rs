@@ -56,16 +56,28 @@ struct IdtPtr {
 }
 
 // ===== Исключения (без error code) =====
+// Stubs align %rsp before calling Rust: the interrupted code's stack alignment is arbitrary,
+// and an SSE spill in the handler on a misaligned stack raises #GP. %rbp keeps the frame reachable.
 macro_rules! gen_stub {
     ($name:ident, $num:expr) => {
         #[unsafe(naked)]
         extern "x86-interrupt" fn $name(_sf: &InterruptStackFrame) {
             core::arch::naked_asm!(
-                "push rdi",
+                "push rbp",
+                "mov rbp, rsp",
+                "and rsp, -16",
+                "push rax", "push rcx", "push rdx", "push rsi", "push rdi",
+                "push r8", "push r9", "push r10", "push r11",
+                "sub rsp, 8",
                 "mov rdi, {num}",
-                "mov rsi, [rsp + 16]",
+                "mov rsi, [rbp + 16]",
+                "mov rdx, [rbp + 8]",
                 "call {handler}",
-                "pop rdi",
+                "add rsp, 8",
+                "pop r11", "pop r10", "pop r9", "pop r8",
+                "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+                "mov rsp, rbp",
+                "pop rbp",
                 "iretq",
                 num = const $num,
                 handler = sym exception_handler,
@@ -80,12 +92,23 @@ macro_rules! gen_stub_error {
         #[unsafe(naked)]
         extern "x86-interrupt" fn $name(_sf: &InterruptStackFrame, _error_code: u64) {
             core::arch::naked_asm!(
-                "push rdi",
+                "push rbp",
+                "mov rbp, rsp",
+                "and rsp, -16",
+                "push rax", "push rcx", "push rdx", "push rsi", "push rdi",
+                "push r8", "push r9", "push r10", "push r11",
+                "sub rsp, 8",
                 "mov rdi, {num}",
-                "mov rsi, [rsp + 8]",
-                "mov rdx, [rsp + 24]",
+                "mov rsi, [rbp + 8]",
+                "mov rdx, [rbp + 24]",
+                "mov rcx, [rbp + 16]",
+                "mov r8, [rbp + 40]",
                 "call {handler}",
-                "pop rdi",
+                "add rsp, 8",
+                "pop r11", "pop r10", "pop r9", "pop r8",
+                "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+                "mov rsp, rbp",
+                "pop rbp",
                 "add rsp, 8",
                 "iretq",
                 num = const $num,
@@ -112,25 +135,18 @@ gen_stub!(isr30, 30); gen_stub!(isr31, 31);
 #[unsafe(naked)]
 extern "x86-interrupt" fn timer_handler(_sf: &InterruptStackFrame) {
     core::arch::naked_asm!(
-        "push rax",
-        "push rcx",
-        "push rdx",
-        "push rsi",
-        "push rdi",
-        "push r8",
-        "push r9",
-        "push r10",
-        "push r11",
+        "push rbp",
+        "mov rbp, rsp",
+        "and rsp, -16",
+        "push rax", "push rcx", "push rdx", "push rsi", "push rdi",
+        "push r8", "push r9", "push r10", "push r11",
+        "sub rsp, 8",
         "call {body}",
-        "pop r11",
-        "pop r10",
-        "pop r9",
-        "pop r8",
-        "pop rdi",
-        "pop rsi",
-        "pop rdx",
-        "pop rcx",
-        "pop rax",
+        "add rsp, 8",
+        "pop r11", "pop r10", "pop r9", "pop r8",
+        "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+        "mov rsp, rbp",
+        "pop rbp",
         "iretq",
         body = sym timer_body,
     );
@@ -147,35 +163,38 @@ extern "C" fn timer_body() {
 #[unsafe(naked)]
 extern "x86-interrupt" fn keyboard_handler(_sf: &InterruptStackFrame) {
     core::arch::naked_asm!(
-        "push rax",
-        "push rcx",
-        "push rdx",
-        "push rsi",
-        "push rdi",
-        "push r8",
-        "push r9",
-        "push r10",
-        "push r11",
+        "push rbp",
+        "mov rbp, rsp",
+        "and rsp, -16",
+        "push rax", "push rcx", "push rdx", "push rsi", "push rdi",
+        "push r8", "push r9", "push r10", "push r11",
+        "sub rsp, 8",
         "call {body}",
-        "pop r11",
-        "pop r10",
-        "pop r9",
-        "pop r8",
-        "pop rdi",
-        "pop rsi",
-        "pop rdx",
-        "pop rcx",
-        "pop rax",
+        "add rsp, 8",
+        "pop r11", "pop r10", "pop r9", "pop r8",
+        "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+        "mov rsp, rbp",
+        "pop rbp",
         "iretq",
         body = sym keyboard_body,
     );
 }
 
+// One IRQ can stand for several bytes: a key press and its release often arrive together,
+// and the controller keeps the second one until the output buffer is read again.
+// Drain the buffer (status bit 0 on port 0x64) so no scancode waits for the next key.
 #[no_mangle]
 extern "C" fn keyboard_body() {
-    let sc: u8;
-    unsafe { core::arch::asm!("in al, 0x60", out("al") sc); }
-    crate::interrupts::keyboard_push(sc);
+    loop {
+        let status: u8;
+        unsafe { core::arch::asm!("in al, 0x64", out("al") status); }
+        if status & 0x01 == 0 {
+            break;
+        }
+        let sc: u8;
+        unsafe { core::arch::asm!("in al, 0x60", out("al") sc); }
+        crate::interrupts::keyboard_push(sc);
+    }
     crate::apic::eoi();
 }
 
@@ -183,9 +202,18 @@ extern "C" fn keyboard_body() {
 #[unsafe(naked)]
 extern "x86-interrupt" fn irq_stub(_sf: &InterruptStackFrame) {
     core::arch::naked_asm!(
-        "push rax",
+        "push rbp",
+        "mov rbp, rsp",
+        "and rsp, -16",
+        "push rax", "push rcx", "push rdx", "push rsi", "push rdi",
+        "push r8", "push r9", "push r10", "push r11",
+        "sub rsp, 8",
         "call {body}",
-        "pop rax",
+        "add rsp, 8",
+        "pop r11", "pop r10", "pop r9", "pop r8",
+        "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+        "mov rsp, rbp",
+        "pop rbp",
         "iretq",
         body = sym irq_body,
     );
@@ -197,8 +225,20 @@ extern "C" fn irq_body() {
 }
 
 // ===== Обработчики исключений =====
+fn print_rip(rip: u64) {
+    crate::serial::send_string("  rip=0x");
+    let mut buf = [0u8; 16];
+    for j in 0..16 {
+        let nib = ((rip >> ((15 - j) * 4)) & 0xF) as u8;
+        buf[j] = if nib < 10 { b'0' + nib } else { b'A' + nib - 10 };
+    }
+    crate::serial::send_string(core::str::from_utf8(&buf).unwrap_or("?"));
+    crate::serial::send_string("\n");
+}
+
 #[no_mangle]
-pub extern "C" fn exception_handler(int_num: u64, cs: u64) {
+pub extern "C" fn exception_handler(int_num: u64, cs: u64, rip: u64) {
+    print_rip(rip);
     crate::serial::log_error("EXCEPTION");
     crate::serial::send_string("  Vector: ");
     let mut buf = [0u8; 20];
@@ -221,7 +261,30 @@ fn terminate_if_user(cs: u64) {
 }
 
 #[no_mangle]
-pub extern "C" fn exception_handler_with_code(int_num: u64, error_code: u64, cs: u64) {
+pub extern "C" fn exception_handler_with_code(int_num: u64, error_code: u64, cs: u64, rip: u64, fault_rsp: u64) {
+    print_rip(rip);
+    // The five words at the faulting %rsp are the frame that iretq was about to pop.
+    for i in 0..5u64 {
+        let word = unsafe { *((fault_rsp + i * 8) as *const u64) };
+        crate::serial::send_string("  iret frame[");
+        crate::serial::send_byte(b'0' + i as u8);
+        crate::serial::send_string("]=0x");
+        let mut wbuf = [0u8; 16];
+        for j in 0..16 {
+            let nib = ((word >> ((15 - j) * 4)) & 0xF) as u8;
+            wbuf[j] = if nib < 10 { b'0' + nib } else { b'A' + nib - 10 };
+        }
+        crate::serial::send_string(core::str::from_utf8(&wbuf).unwrap_or("?"));
+        crate::serial::send_string("\n");
+    }
+    crate::serial::send_string("  frame cs=0x");
+    let mut cbuf = [0u8; 16];
+    for j in 0..16 {
+        let nib = ((cs >> ((15 - j) * 4)) & 0xF) as u8;
+        cbuf[j] = if nib < 10 { b'0' + nib } else { b'A' + nib - 10 };
+    }
+    crate::serial::send_string(core::str::from_utf8(&cbuf).unwrap_or("?"));
+    crate::serial::send_string("\n");
     crate::serial::log_error("EXCEPTION");
     crate::serial::send_string("  Vector: ");
     let mut buf = [0u8; 20];
@@ -248,6 +311,16 @@ pub extern "C" fn exception_handler_with_code(int_num: u64, error_code: u64, cs:
         }
         crate::serial::send_string(core::str::from_utf8(&buf[..16]).unwrap_or("?"));
         crate::serial::send_string("\n");
+        let cr3: u64;
+        unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3); }
+        crate::serial::send_string("  CR3=0x");
+        for j in 0..16 {
+            let nib = ((cr3 >> ((15 - j) * 4)) & 0xF) as u8;
+            buf[j] = if nib < 10 { b'0' + nib } else { b'A' + nib - 10 };
+        }
+        crate::serial::send_string(core::str::from_utf8(&buf[..16]).unwrap_or("?"));
+        crate::serial::send_string("\n");
+        crate::vmm::debug_walk(cr3, cr2);
     }
     terminate_if_user(cs);
     loop { unsafe { core::arch::asm!("cli; hlt") } }

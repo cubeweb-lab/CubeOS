@@ -1,0 +1,31 @@
+CubeOS
+Copyright 2025-2026 MinecAnton209
+
+This project contains code ported from NovumOS
+(https://github.com/MinecAnton209/NovumOS), Copyright 2025-2026 MinecAnton209,
+licensed under the Apache License, Version 2.0.
+
+Ported files (originally in NovumOS, zig/drivers/fat*, zig/kernel/str.zig):
+
+  zig/src/drivers/fat.zig
+  zig/src/drivers/fat/bpb.zig
+  zig/src/drivers/fat/cache.zig
+  zig/src/drivers/fat/dir.zig
+  zig/src/drivers/fat/fat.zig
+  zig/src/drivers/fat/file.zig
+  zig/src/kernel/str.zig
+
+These files keep the Apache License, Version 2.0 (see the copyright header in each file).
+Their logic is unchanged; only the CubeOS-specific imports were redirected to the shims below.
+
+The following files were written for CubeOS to replace NovumOS-specific dependencies.
+They are part of CubeOS and follow the project license (GPL-3.0):
+
+  zig/src/drivers/ata.zig      (sector I/O through the kernel ATA driver)
+  zig/src/drivers/vga.zig      (console colors, no-op)
+  zig/src/drivers/time/time.zig (fixed timestamp, no RTC driver yet)
+  zig/src/commands/common.zig  (console output helpers)
+  zig/src/config.zig           (FAT build options)
+  zig/src/root.zig             (C ABI exports for the Rust kernel)
+  zig/build.zig                (freestanding x86_64 object build)
+  src/cube_core/zigfs.rs       (Rust side of the bridge)

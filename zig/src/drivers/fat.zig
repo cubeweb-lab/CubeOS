@@ -1,0 +1,86 @@
+// Copyright 2025-2026 MinecAnton209
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://apache.org
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+pub const fat = @import("fat/fat.zig");
+
+pub const FatCacheSize = fat.FatCacheSize;
+pub const fat_read_cached_sector = fat.fat_read_cached_sector;
+
+pub const FatType = fat.FatType;
+pub const BPB = fat.BPB;
+pub const read_bpb = fat.read_bpb;
+pub const disabled_fs_name = fat.disabled_fs_name;
+pub const report_bpb_error = fat.report_bpb_error;
+pub const DirEntry = fat.DirEntry;
+pub const LfnState = fat.LfnState;
+pub const extract_lfn_part = fat.extract_lfn_part;
+pub const consume_lfn_entry = fat.consume_lfn_entry;
+
+pub const EntryLocation = fat.EntryLocation;
+pub const FatName = fat.FatName;
+pub const PathResolution = fat.PathResolution;
+pub const ResolvedPath = fat.ResolvedPath;
+
+pub const list_directory = fat.list_directory;
+pub const ListItem = fat.ListItem;
+pub const collect_entries = fat.collect_entries;
+pub const resolve_path = fat.resolve_path;
+pub const resolve_full_path = fat.resolve_full_path;
+pub const find_entry = fat.find_entry;
+pub const find_entry_literal = fat.find_entry_literal;
+pub const find_entry_location = fat.find_entry_location;
+pub const find_entry_location_literal = fat.find_entry_location_literal;
+pub const delete_file = fat.delete_file;
+pub const delete_directory = fat.delete_directory;
+pub const is_directory_empty = fat.is_directory_empty;
+pub const delete_all_in_directory = fat.delete_all_in_directory;
+pub const copy_file = fat.copy_file;
+pub const copy_file_literal = fat.copy_file_literal;
+pub const copy_directory = fat.copy_directory;
+pub const copy_directory_literal = fat.copy_directory_literal;
+pub const create_directory = fat.create_directory;
+pub const set_file_attrib = fat.set_file_attrib;
+pub const rename_file = fat.rename_file;
+pub const get_name_from_raw = fat.get_name_from_raw;
+pub const get_fat_entry = fat.get_fat_entry;
+pub const set_fat_entry = fat.set_fat_entry;
+pub const add_directory_entry = fat.add_directory_entry;
+pub const find_free_cluster = fat.find_free_cluster;
+pub const free_cluster_chain = fat.free_cluster_chain;
+
+pub const read_file = fat.read_file;
+pub const read_file_bounded = fat.read_file_bounded;
+pub const read_file_literal = fat.read_file_literal;
+pub const stream_to_console = fat.stream_to_console;
+pub const stream_to_console_literal = fat.stream_to_console_literal;
+pub const write_file = fat.write_file;
+pub const append_to_file = fat.append_to_file;
+
+pub const FileHandle = fat.FileHandle;
+pub const fat_open = fat.fat_open;
+pub const fat_size = fat.fat_size;
+pub const fat_getcwd = fat.fat_getcwd;
+pub const fat_getcwd_len = fat.fat_getcwd_len;
+pub const fat_lseek = fat.fat_lseek;
+pub const fat_tell = fat.fat_tell;
+pub const fat_truncate = fat.fat_truncate;
+pub const fat_sync = fat.fat_sync;
+pub const fat_expand = fat.fat_expand;
+pub const fat_forward = fat.fat_forward;
+pub const fat_gets = fat.fat_gets;
+pub const fat_read = fat.fat_read;
+pub const fat_puts = fat.fat_puts;
+pub const fat_putc = fat.fat_putc;
+
+pub const format = fat.format;

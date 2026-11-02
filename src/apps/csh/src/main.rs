@@ -1,108 +1,330 @@
 #![no_std]
 #![no_main]
 
-use core::arch::asm;
+// CubeShell: interactive shell that talks to the kernel only through syscalls.
+use cube_syscall as sys;
 
-// Must match KernelApi in src/cube_core/loader.rs; the kernel passes it in rdi.
-#[repr(C)]
-pub struct KernelApi {
-    putc: extern "C" fn(u8),
-    clear: extern "C" fn(),
+const MAX_LINE: usize = 128;
+const MAX_ARGS: usize = 8;
+const MAX_PATH: usize = 256;
+const DT_DIR: u8 = 4;
+
+// Writes to stdout, converting "\n" to "\r\n" for serial terminals.
+fn emit(bytes: &[u8]) {
+    let mut start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\n' {
+            sys::write(sys::STDOUT, &bytes[start..i]);
+            sys::write(sys::STDOUT, b"\r\n");
+            start = i + 1;
+        }
+    }
+    if start < bytes.len() {
+        sys::write(sys::STDOUT, &bytes[start..]);
+    }
 }
 
-static mut API: *const KernelApi = core::ptr::null();
-
-// Простой вывод в Serial (COM1)
-fn serial_out(byte: u8) {
-    unsafe { asm!("out dx, al", in("dx") 0x3F8u16, in("al") byte) };
+fn out(s: &str) {
+    emit(s.as_bytes());
 }
 
-fn console_putc(byte: u8) {
-    unsafe {
-        if !API.is_null() {
-            ((*API).putc)(byte);
+fn err(s: &str) {
+    sys::write(sys::STDERR, s.as_bytes());
+}
+
+// Reads one line. The kernel echoes typed characters itself; backspace only needs its
+// erase sequence here because the kernel moves the cursor but does not clear the cell.
+fn read_line(buf: &mut [u8; MAX_LINE]) -> usize {
+    let mut len = 0;
+    loop {
+        let mut b = [0u8; 1];
+        if sys::read(sys::STDIN, &mut b) != 1 {
+            core::hint::spin_loop();
+            continue;
+        }
+        match b[0] {
+            b'\n' => return len,
+            0x08 => {
+                if len > 0 {
+                    len -= 1;
+                    sys::write(sys::STDOUT, b" \x08");
+                }
+            }
+            c if (0x20..0x7F).contains(&c) && len < MAX_LINE => {
+                buf[len] = c;
+                len += 1;
+            }
+            _ => {}
         }
     }
 }
 
-fn console_clear() {
-    unsafe {
-        if !API.is_null() {
-            ((*API).clear)();
+fn prompt() {
+    let mut cwd = [0u8; MAX_PATH];
+    let n = sys::getcwd(&mut cwd);
+    out("root@cubeos:");
+    if n > 0 {
+        emit(&cwd[..n as usize]);
+    }
+    out("# ");
+}
+
+fn tokenize<'a>(line: &'a str, args: &mut [&'a str; MAX_ARGS]) -> usize {
+    let mut n = 0;
+    for tok in line.split_ascii_whitespace() {
+        if n == MAX_ARGS {
+            break;
+        }
+        args[n] = tok;
+        n += 1;
+    }
+    n
+}
+
+fn cmd_help() {
+    out("commands: help, echo [text] [> file | >> file], pwd, cd <dir>, ls [dir], cat <file>,\n");
+    out("          touch <file>, cp <src> <dst>, mv <src> <dst>, mkdir <dir>, rm <file>, exit\n");
+}
+
+fn write_text(fd: isize, args: &[&str]) {
+    for (i, arg) in args.iter().enumerate() {
+        if i > 0 {
+            sys::write(fd as usize, b" ");
+        }
+        sys::write(fd as usize, arg.as_bytes());
+    }
+    sys::write(fd as usize, b"\n");
+}
+
+fn cmd_echo(args: &[&str]) {
+    // "echo text > file" truncates the file, "echo text >> file" appends to it.
+    if let Some(k) = args.iter().position(|a| *a == ">" || *a == ">>") {
+        let target = match args.get(k + 1) {
+            Some(t) => *t,
+            None => {
+                err("echo: missing file after redirection\n");
+                return;
+            }
+        };
+        let flags = sys::O_WRONLY | sys::O_CREAT | if args[k] == ">>" { sys::O_APPEND } else { sys::O_TRUNC };
+        let fd = sys::open(target.as_bytes(), flags);
+        if fd < 0 {
+            err("echo: cannot write '");
+            err(target);
+            err("'\n");
+            return;
+        }
+        write_text(fd, &args[..k]);
+        sys::close(fd as usize);
+        return;
+    }
+    write_text(sys::STDOUT as isize, args);
+}
+
+fn cmd_touch(path: &str) {
+    let fd = sys::open(path.as_bytes(), sys::O_WRONLY | sys::O_CREAT);
+    if fd < 0 {
+        err("touch: cannot touch '");
+        err(path);
+        err("'\n");
+        return;
+    }
+    sys::close(fd as usize);
+}
+
+fn cmd_cp(src: &str, dst: &str) {
+    let input = sys::open(src.as_bytes(), sys::O_RDONLY);
+    if input < 0 {
+        err("cp: cannot read '");
+        err(src);
+        err("': no such file\n");
+        return;
+    }
+    let output = sys::open(dst.as_bytes(), sys::O_WRONLY | sys::O_CREAT | sys::O_TRUNC);
+    if output < 0 {
+        sys::close(input as usize);
+        err("cp: cannot write '");
+        err(dst);
+        err("'\n");
+        return;
+    }
+    let mut buf = [0u8; 512];
+    loop {
+        let n = sys::read(input as usize, &mut buf);
+        if n <= 0 {
+            break;
+        }
+        let n = n as usize;
+        if sys::write(output as usize, &buf[..n]) != n as isize {
+            err("cp: copy limit reached (4 KiB per file)\n");
+            break;
         }
     }
+    sys::close(output as usize);
+    sys::close(input as usize);
 }
 
-fn out_byte(byte: u8) {
-    serial_out(byte);
-    console_putc(byte);
+fn cmd_mv(src: &str, dst: &str) {
+    if sys::rename(src.as_bytes(), dst.as_bytes()) < 0 {
+        err("mv: cannot move '");
+        err(src);
+        err("' to '");
+        err(dst);
+        err("'\n");
+    }
 }
 
-fn serial_print(s: &str) {
-    for byte in s.bytes() {
-        if byte == b'\n' {
-            serial_out(b'\r');
+fn cmd_pwd() {
+    let mut cwd = [0u8; MAX_PATH];
+    let n = sys::getcwd(&mut cwd);
+    if n > 0 {
+        emit(&cwd[..n as usize]);
+    }
+    out("\n");
+}
+
+fn cmd_ls(path: &str) {
+    let fd = sys::open(path.as_bytes(), sys::O_RDONLY);
+    if fd < 0 {
+        err("ls: cannot access '");
+        err(path);
+        err("': no such directory\n");
+        return;
+    }
+
+    // Each getdents record: u64 cluster, u64 index, u16 reclen, u8 type, NUL-terminated name at offset 19.
+    let mut buf = [0u8; 2048];
+    loop {
+        let n = sys::getdents(fd as usize, &mut buf);
+        if n <= 0 {
+            break;
         }
-        out_byte(byte);
+        let n = n as usize;
+        let mut off = 0;
+        while off + 19 <= n {
+            let reclen = u16::from_le_bytes([buf[off + 16], buf[off + 17]]) as usize;
+            if reclen < 20 || off + reclen > n {
+                break;
+            }
+            let rec = &buf[off..off + reclen];
+            let name_len = rec[19..].iter().position(|&b| b == 0).unwrap_or(rec.len() - 19);
+            emit(&rec[19..19 + name_len]);
+            if rec[18] == DT_DIR {
+                out("/");
+            }
+            out("\n");
+            off += reclen;
+        }
     }
+    sys::close(fd as usize);
 }
 
-// For ANSI sequences that only a serial terminal understands
-fn serial_only(s: &str) {
-    for byte in s.bytes() {
-        serial_out(byte);
+fn cmd_cat(path: &str) {
+    let fd = sys::open(path.as_bytes(), sys::O_RDONLY);
+    if fd < 0 {
+        err("cat: ");
+        err(path);
+        err(": no such file\n");
+        return;
     }
+    let mut buf = [0u8; 512];
+    loop {
+        let n = sys::read(fd as usize, &mut buf);
+        if n <= 0 {
+            break;
+        }
+        emit(&buf[..n as usize]);
+    }
+    sys::close(fd as usize);
 }
 
-// Port 0x60 keeps returning the last scancode when empty, so only read it when port 0x64 reports data
-fn keyboard_read() -> Option<u8> {
-    let status: u8;
-    unsafe { asm!("in al, 0x64", out("al") status) };
-    if status & 0x01 == 0 {
-        return None;
+// Returns false when the shell should exit.
+fn run(args: &[&str]) -> bool {
+    match args[0] {
+        "help" => cmd_help(),
+        "echo" => cmd_echo(&args[1..]),
+        "pwd" => cmd_pwd(),
+        "cd" => {
+            let target = args.get(1).copied().unwrap_or("/");
+            if sys::chdir(target.as_bytes()) < 0 {
+                err("cd: no such directory: ");
+                err(target);
+                err("\n");
+            }
+        }
+        "ls" => cmd_ls(args.get(1).copied().unwrap_or(".")),
+        "cat" => match args.get(1) {
+            Some(path) => cmd_cat(path),
+            None => err("usage: cat <file>\n"),
+        },
+        "mkdir" => match args.get(1) {
+            Some(path) => {
+                if sys::mkdir(path.as_bytes(), 0o755) < 0 {
+                    err("mkdir: cannot create '");
+                    err(path);
+                    err("'\n");
+                }
+            }
+            None => err("usage: mkdir <dir>\n"),
+        },
+        "rm" => match args.get(1) {
+            Some(path) => {
+                if sys::unlink(path.as_bytes()) < 0 {
+                    err("rm: cannot remove '");
+                    err(path);
+                    err("'\n");
+                }
+            }
+            None => err("usage: rm <file>\n"),
+        },
+        "touch" => match args.get(1) {
+            Some(path) => cmd_touch(path),
+            None => err("usage: touch <file>\n"),
+        },
+        "cp" => match (args.get(1), args.get(2)) {
+            (Some(src), Some(dst)) => cmd_cp(src, dst),
+            _ => err("usage: cp <src> <dst>\n"),
+        },
+        "mv" => match (args.get(1), args.get(2)) {
+            (Some(src), Some(dst)) => cmd_mv(src, dst),
+            _ => err("usage: mv <src> <dst>\n"),
+        },
+        "exit" => return false,
+        other => {
+            err("csh: command not found: ");
+            err(other);
+            err("\n");
+        }
     }
-    let sc: u8;
-    unsafe { asm!("in al, 0x60", out("al") sc) };
-    Some(sc)
-}
-
-// Простая таблица сканкодов → ASCII (только буквы и цифры)
-fn scancode_to_ascii(sc: u8) -> Option<u8> {
-    match sc {
-        0x02 => Some(b'1'), 0x03 => Some(b'2'), 0x04 => Some(b'3'),
-        0x05 => Some(b'4'), 0x06 => Some(b'5'), 0x07 => Some(b'6'),
-        0x08 => Some(b'7'), 0x09 => Some(b'8'), 0x0A => Some(b'9'),
-        0x0B => Some(b'0'),
-        0x10 => Some(b'q'), 0x11 => Some(b'w'), 0x12 => Some(b'e'),
-        0x13 => Some(b'r'), 0x14 => Some(b't'), 0x15 => Some(b'y'),
-        0x16 => Some(b'u'), 0x17 => Some(b'i'), 0x18 => Some(b'o'),
-        0x19 => Some(b'p'),
-        0x1E => Some(b'a'), 0x1F => Some(b's'), 0x20 => Some(b'd'),
-        0x21 => Some(b'f'), 0x22 => Some(b'g'), 0x23 => Some(b'h'),
-        0x24 => Some(b'j'), 0x25 => Some(b'k'), 0x26 => Some(b'l'),
-        0x2C => Some(b'z'), 0x2D => Some(b'x'), 0x2E => Some(b'c'),
-        0x2F => Some(b'v'), 0x30 => Some(b'b'), 0x31 => Some(b'n'),
-        0x32 => Some(b'm'),
-        0x1C => Some(b'\n'),  // Enter
-        0x0E => Some(b'\x08'), // Backspace
-        0x39 => Some(b' '),    // Space
-        _ => None,
-    }
+    true
 }
 
 #[no_mangle]
-pub extern "C" fn _start(api: *const KernelApi) -> ! {
-    unsafe { API = api };
+pub extern "C" fn _start() -> ! {
+    out("\nCubeShell (csh). Type 'help' for commands.\n");
 
-    // TODO: KernelApi не виден из user-PML4. Перевести на syscall.
-    // Пока — просто loop, чтобы проверить, что user-mode работает.
+    let mut line = [0u8; MAX_LINE];
     loop {
-        unsafe { core::arch::asm!("hlt"); }
+        prompt();
+        let len = read_line(&mut line);
+        let text = match core::str::from_utf8(&line[..len]) {
+            Ok(text) => text,
+            Err(_) => continue,
+        };
+
+        let mut args = [""; MAX_ARGS];
+        let argc = tokenize(text, &mut args);
+        if argc == 0 {
+            continue;
+        }
+        if !run(&args[..argc]) {
+            sys::exit(0);
+        }
     }
 }
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    serial_print("\n[CSH] PANIC!\n");
-    loop { unsafe { asm!("cli; hlt") } }
+    err("csh: panic\n");
+    sys::exit(1)
 }
