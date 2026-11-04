@@ -20,6 +20,7 @@ pub const SYS_MKDIR:    u64 = 14;
 pub const SYS_UNLINK:   u64 = 34;
 pub const SYS_RENAME:   u64 = 82;
 pub const SYS_DEBUG:    u64 = 78;
+pub const SYS_EXEC:     u64 = 99;
 
 // open() flags
 const O_WRONLY:    u64 = 0o1;
@@ -587,6 +588,95 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                      rip = in(reg) crate::kernel_main_loop as u64,
                      options(noreturn),
                 );
+            }
+        }
+        SYS_EXEC => {
+            // a1 = ptr to "path\\0", a2 = total length (включая \\0)
+            if a1 == 0 || a2 == 0 || a2 > 512 {
+                return u64::MAX;
+            }
+
+            // Копируем путь из user space
+            let mut path_buf = [0u8; 512];
+            let len = match unsafe { copy_user_str(a1, a2, &mut path_buf) } {
+                Some(n) => n,
+                None => return u64::MAX,
+            };
+
+            // Проверка: строка должна содержать нулевой терминатор
+            if path_buf[..len].iter().all(|&b| b != 0) {
+                return u64::MAX;
+            }
+
+            let path = match core::str::from_utf8(&path_buf[..len]) {
+                Ok(s) => s.trim_end_matches("\\0"),
+                Err(_) => return u64::MAX,
+            };
+
+            // Буфер для программы — локальный, не static mut
+            const MAX_PROGRAM_SIZE: usize = 65536;
+            let mut program_buf = [0u8; MAX_PROGRAM_SIZE];
+
+            // Читаем файл через zigfs
+            const START_DIR: u32 = 0; // корень
+            let size = match crate::zigfs::read(START_DIR, path.as_bytes(), 0, &mut program_buf) {
+                Some(n) => n,
+                None => {
+                    crate::serial::send_string("[SYSCALL] EXEC: file not found or read error: ");
+                    crate::serial::send_string(path);
+                    crate::serial::send_string("\\n");
+                    return u64::MAX;
+                }
+            };
+
+            // Проверка ELF-магии
+            if size < 4 || program_buf[0..4] != *b"\\x7fELF" {
+                crate::serial::send_string("[SYSCALL] EXEC: invalid ELF: ");
+                crate::serial::send_string(path);
+                crate::serial::send_string("\\n");
+                return u64::MAX;
+            }
+
+            // Создаём новое адресное пространство
+            let mut aspace = match crate::vmm::AddressSpace::new() {
+                Some(a) => a,
+                None => {
+                    crate::serial::send_string("[SYSCALL] EXEC: failed to create AddressSpace\\n");
+                    return u64::MAX;
+                }
+            };
+
+            // Загружаем и запускаем программу
+            match crate::loader::spawn_program(&mut aspace, &program_buf[..size], path, crate::sched::Qos::Interactive) {
+                Some(pid) => {
+                    crate::serial::send_string("[SYSCALL] EXEC: launched ");
+                    crate::serial::send_string(path);
+                    crate::serial::send_string(" as pid=");
+
+                    // Вывод PID (без внешних утилит)
+                    let mut temp = [0u8; 20];
+                    let mut i = 19;
+                    let mut n = pid as usize;
+                    if n == 0 {
+                        temp[i] = b'0';
+                        i -= 1;
+                    } else {
+                        while n > 0 && i > 0 {
+                            temp[i] = b'0' + (n % 10) as u8;
+                            n /= 10;
+                            i -= 1;
+                        }
+                    }
+                    crate::serial::send_string(core::str::from_utf8(&temp[i+1..]).unwrap_or("?"));
+                    crate::serial::send_string("\\n");
+
+                    pid as u64
+                }
+                None => {
+                    // Ошибка загрузки — освобождаем ресурсы
+                    crate::vmm::destroy_pml4(aspace.pml4_phys());
+                    u64::MAX
+                }
             }
         }
         _ => {

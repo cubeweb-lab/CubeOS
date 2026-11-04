@@ -14,14 +14,17 @@ KERNEL      := kernel.elf
 ISO         := cubeos.iso
 HDD         := cubeos.img
 CSH         := target/apps/$(TARGET)/release/csh
+SPARKD      := target/apps/$(TARGET)/release/sparkd
 KERNEL_LIB  := target/$(TARGET)/release/libcube_core.a
 ZIG_OBJ     := zig/zig-out/lib/cube_zig.o
+INFO_IN     := info/*
 
 HDD_SIZE_MB := 512
 # Partition 1 is the boot FAT32 volume, partition 2 is the system volume that the kernel mounts (MBR index 1).
 BOOT_OFFSET   := 1048576
 SYSTEM_OFFSET := 210763776
 SYSTEM_KERNEL := ::/system/kernel/cubecore_1-0-0-dev.elf
+INFO_OUT      := ::/system/info/
 
 QEMU_FLAGS  := -m 256M -serial stdio -no-reboot -no-shutdown
 
@@ -33,13 +36,17 @@ kernel: $(KERNEL)
 
 csh: $(CSH)
 
+sparkd: $(SPARKD)
+
 iso: $(ISO)
 
 hdd: $(HDD) $(KERNEL) $(CSH) config/boot.cfg
-	-mmd -i $(HDD)@@$(SYSTEM_OFFSET) ::/system ::/system/kernel ::/system/config ::/bin ::/home ::/tmp ::/etc
+	-mmd -i $(HDD)@@$(SYSTEM_OFFSET) ::/system ::/system/kernel ::/system/config ::/system/info ::/bin ::/home ::/tmp ::/etc
 	mcopy -o -i $(HDD)@@$(SYSTEM_OFFSET) $(KERNEL) $(SYSTEM_KERNEL)
 	mcopy -o -i $(HDD)@@$(SYSTEM_OFFSET) $(CSH) ::/bin/csh
+	mcopy -o -i $(HDD)@@$(SYSTEM_OFFSET) $(SPARKD) ::/bin/sparkd
 	mcopy -o -i $(HDD)@@$(SYSTEM_OFFSET) config/boot.cfg ::/system/config/boot.cfg
+	mcopy -o -i $(HDD)@@$(SYSTEM_OFFSET) $(INFO_IN) $(INFO_OUT)
 	mcopy -o -i $(HDD)@@$(BOOT_OFFSET) $(KERNEL) ::/kernel.elf
 	@echo "  HDD image updated: $(HDD)"
 
@@ -77,6 +84,11 @@ $(KERNEL): $(BUILD)/boot.o $(BUILD)/ata.o $(ZIG_OBJ) $(KERNEL_LIB) linker.ld
 
 $(CSH): FORCE
 	cd src/apps/csh && RUSTFLAGS="-C link-arg=-Tlinker.ld -C relocation-model=static -C code-model=large" \
+		$(CARGO) build -Z build-std=core,compiler_builtins \
+		--target $(TARGET) --release --target-dir ../../../target/apps
+
+$(SPARKD): FORCE
+	cd src/apps/sparkd && RUSTFLAGS="-C link-arg=-Tlinker.ld -C relocation-model=static -C code-model=large" \
 		$(CARGO) build -Z build-std=core,compiler_builtins \
 		--target $(TARGET) --release --target-dir ../../../target/apps
 

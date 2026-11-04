@@ -23,6 +23,9 @@ mod ring3;
 mod syscall;
 mod sched;
 mod vmm;
+mod uptime;
+mod cpuinfo;
+mod hostinfo;
 
 use multiboot::MultibootInfo;
 use core::arch::asm;
@@ -30,6 +33,8 @@ use core::sync::atomic::Ordering;
 use fs::FSManager;
 use ata::AtaDrive;
 use sched::Qos;
+
+pub static mut MB_INFO_ADDR: u32 = 0;
 
 fn get_cpu_info() -> ([u8; 12], u32) {
     let mut vendor = [0u8; 12];
@@ -164,6 +169,8 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
     serial::send_string(", size ");
     serial::send_string(write_num(&mut buf, mb_info.total_size as usize));
     serial::send_string(" bytes\n");
+    unsafe { MB_INFO_ADDR = info_addr; }
+    crate::hostinfo::write_comp_file(info_addr, 2);
 
     if let Some(ref mut logger) = vesa_log {
         logger.write_string("[INFO ] Multiboot2 info at 0x");
@@ -275,6 +282,9 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
         if fs.mount(&ata, 1) {
             log_both(&mut vesa_log, "OK", "FAT volume mounted (Zig driver)");
 
+            // 18. Write CPU-model to /system/info/cpu-m
+            crate::cpuinfo::write_cpu_file(2);
+
             if cfg!(feature = "kernel-debug") {
                 zigfs::self_test();
             }
@@ -285,6 +295,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                     log_both(&mut vesa_log, "OK", "Boot config loaded");
 
                     let cmdline = checks::config_cmdline(text);
+                    let apic_logs = checks::config_apic_logs(text);
 
                     if let Some(cmd) = cmdline {
                         log_both(&mut vesa_log, "INFO", "Launching program from cmdline...");
@@ -304,7 +315,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                         log_both(&mut vesa_log, "INFO", "No cmdline, skipping launch");
                     }
 
-                    kernel_main_loop()
+                    kernel_main_loop(&ata, &fs)
                 }
                 if let Ok(text) = core::str::from_utf8(&config_buf[..size]) {
                     for line in text.lines() {
@@ -358,27 +369,41 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
     sched::spawn(task_b, stack_b, 1, sched::Qos::Utility, b"task_b");
     serial::log_ok("Test tasks A/B spawned");
 
-    kernel_main_loop()
+    kernel_main_loop(&ata, &fs)
 }
 
 #[no_mangle]
-pub extern "C" fn kernel_main_loop() -> ! {
+pub extern "C" fn kernel_main_loop(ata: &AtaDrive, fs: &FSManager) -> ! {
     crate::serial::send_string("\n[KERNEL] Back in main loop\n");
 
     let mut last_ticks = 0u64;
     let mut buf = [0u8; 20];
 
+    /*if apic_logs = "false" {
+     * crate::serial::send_string("\n[INFO] APIC logs is disabled\n");
+    } if apic_logs = "true" {
+    crate::serial::send_string("\n[INFO] APIC logs is enabled. Start logging...");
     loop {
-        // Проверка APIC тиков раз в ~секунду (100 Hz → +100)
-        let t = idt::TICKS.load(Ordering::Relaxed);
-        if t >= last_ticks + 100 {
-            last_ticks = t;
-            crate::serial::send_string("[APIC] ticks=");
-            crate::serial::send_string(write_num(&mut buf, t as usize));
-            crate::serial::send_string("\n");
-        }
+    // Проверка APIC тиков раз в ~секунду (100 Hz → +100)
+    let t = idt::TICKS.load(Ordering::Relaxed);
+    if t >= last_ticks + 100 {
+        last_ticks = t;
+        crate::serial::send_string("[APIC] ticks=");
+        crate::serial::send_string(write_num(&mut buf, t as usize));
+        crate::serial::send_string("\n");
+    }
 
-        // Keys stay in the buffer for the shell: this loop must not consume them.
+    unsafe { core::arch::asm!("hlt") }
+    }
+    } else {
+        crate::serial::send_string("\n[ERROR] Invalid boot config! Please check and edit /system/config/boot.cfg!");
+        loop {
+        unsafe { core::arch::asm!("cli; hlt") }
+    }
+    }*/
+
+    loop {
+        crate::uptime::write_uptime_file(ata, fs);
         unsafe { core::arch::asm!("hlt") }
     }
 }

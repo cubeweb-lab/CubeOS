@@ -155,6 +155,7 @@ extern "x86-interrupt" fn timer_handler(_sf: &InterruptStackFrame) {
 #[no_mangle]
 extern "C" fn timer_body() {
     TICKS.fetch_add(1, Ordering::Relaxed);
+    crate::uptime::tick();
     crate::apic::eoi();
     crate::sched::tick();
 }

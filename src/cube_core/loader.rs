@@ -2,13 +2,13 @@ use crate::fs::FSManager;
 use crate::vmm::{AddressSpace, USER_LIMIT};
 use crate::sched::{self, Qos};
 
-const MAX_PROGRAM_SIZE: usize = 65536;
+pub const MAX_PROGRAM_SIZE: usize = 65536;
 
 #[repr(C, align(4096))]
 struct ProgramBuf([u8; MAX_PROGRAM_SIZE]);
 
 #[link_section = ".program_buf"]
-static mut PROGRAM_BUF: ProgramBuf = ProgramBuf([0; MAX_PROGRAM_SIZE]);
+pub static mut PROGRAM_BUF: ProgramBuf = ProgramBuf([0; MAX_PROGRAM_SIZE]);
 
 const USER_STACK_TOP: u64 = USER_LIMIT - 0x10000;   // 0x7FFF_FFFF_0000
 const USER_STACK_PAGES: u64 = 4;
@@ -39,7 +39,7 @@ pub fn exec_user(
 }
 
 // Ownership of `aspace` passes to the task only on success; the caller frees it otherwise.
-fn spawn_program(aspace: &mut AddressSpace, image: &[u8], path: &str, qos: Qos) -> Option<u64> {
+pub(crate) fn spawn_program(aspace: &mut AddressSpace, image: &[u8], path: &str, qos: Qos) -> Option<u64> {
     let program = crate::elf::load_elf(image, aspace)?;
     crate::serial::send_string("[LOADER] ELF mapped at 0x");
     let mut hb = [0u8; 16];

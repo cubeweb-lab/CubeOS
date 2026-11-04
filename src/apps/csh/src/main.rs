@@ -81,9 +81,21 @@ fn tokenize<'a>(line: &'a str, args: &mut [&'a str; MAX_ARGS]) -> usize {
     n
 }
 
+fn cmd_version() {
+    out("\nCTK shell - CubeOS terminal shell.\n");
+    out("version 0.0.1-010-alpha release (x86_64-cubeos-ctk)\n");
+    out("This program from CTK(CubeToolKit) free-software pack.\n");
+    out("Copyright (C) 2026 CubeDev team\n");
+    out("License GPLv3+: GNU GPL version 3 or later\n");
+    out("http://gnu.org/licenses/gpl.html\n");
+    out("\n");
+    out("You are free to change and redistribute it.\n");
+    out("There is NO WARRANTY, to the extent permitted by law.\n");
+}
+
 fn cmd_help() {
     out("commands: help, echo [text] [> file | >> file], pwd, cd <dir>, ls [dir], cat <file>,\n");
-    out("          touch <file>, cp <src> <dst>, mv <src> <dst>, mkdir <dir>, rm <file>, exit\n");
+    out("     version, touch <file>, cp <src> <dst>, mv <src> <dst>, mkdir <dir>, rm <file>, exit\n");
 }
 
 fn write_text(fd: isize, args: &[&str]) {
@@ -238,12 +250,77 @@ fn cmd_cat(path: &str) {
     sys::close(fd as usize);
 }
 
+fn cmd_v() {
+    out("csh v0.0.1-0010-alpha release\n");
+}
+
+fn cubefetch() {
+    let osr_path = "/system/info/os-release";
+    let host_path = "/system/info/comp";
+    let krnlr_path = "/system/info/kernel-release";
+    let upt_path = "/system/info/uptime";
+    let disp_path = "/system/info/display";
+    let cpu_path = "/system/info/cpu-m";
+    let de_path = "/system/info/desk-env";
+    let wm_path = "/system/info/win-man";
+    let wmt_path = "/system/info/wm-theme";
+    let det_path = "/system/info/de-theme";
+    let ic_path = "/system/info/icons";
+    let font_path = "/system/info/font";
+    let cur_path = "/system/info/cursor";
+    let term_path = "/system/info/term";
+    let tfont_path = "/system/info/term-font";
+
+    out("\n");
+    out("  ______________________    \n");
+    out(" /                     /|    root@cubeos\n");
+    out("/_____________________/ |   -----------------------\n");
+    out("|                     | |   OS: ");
+    cmd_cat(osr_path);
+    out("|::::       ::        | |   Host: ");
+    cmd_cat(host_path);
+    out("|::         ::   .... | |   Kernel: ");
+    cmd_cat(krnlr_path);
+    out("|::   :: :: :::: :''' | |   Uptime: ");
+    cmd_cat(upt_path);
+    out("|:::: ::::: :::: .... | |   Packages: \n");
+    out("|     ..... ....      | |   Shell: ");
+    cmd_v();
+    out("|     :   : :...      | |   Display: ");
+    cmd_cat(disp_path);
+    out("|     :...: ...:      | /   DE: ");
+    cmd_cat(de_path);
+    out("|_____________________|/    WM: ");
+    cmd_cat(wm_path);
+    out("                            WM Theme: ");
+    cmd_cat(wmt_path);
+    out("                            Theme: ");
+    cmd_cat(det_path);
+    out("                            Icons: ");
+    cmd_cat(ic_path);
+    out("                            Font: ");
+    cmd_cat(font_path);
+    out("                            Cursor: ");
+    cmd_cat(cur_path);
+    out("                            Terminal: ");
+    cmd_cat(term_path);
+    out("                            Terminal Font: ");
+    cmd_cat(tfont_path);
+    out("                            CPU: ");
+    cmd_cat(cpu_path);
+    out("                            GPU: ");
+
+
+}
+
 // Returns false when the shell should exit.
 fn run(args: &[&str]) -> bool {
     match args[0] {
         "help" => cmd_help(),
+        "version" => cmd_version(),
         "echo" => cmd_echo(&args[1..]),
         "pwd" => cmd_pwd(),
+        "v" => cmd_v(),
         "cd" => {
             let target = args.get(1).copied().unwrap_or("/");
             if sys::chdir(target.as_bytes()) < 0 {
@@ -289,6 +366,7 @@ fn run(args: &[&str]) -> bool {
             (Some(src), Some(dst)) => cmd_mv(src, dst),
             _ => err("usage: mv <src> <dst>\n"),
         },
+        "cubefetch" => cubefetch(),
         "exit" => return false,
         other => {
             err("csh: command not found: ");

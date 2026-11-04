@@ -103,6 +103,23 @@ pub fn config_cmdline(text: &str) -> Option<&str> {
     cmdline
 }
 
+pub fn config_apic_logs(text: &str) -> Option<&str> {
+    let mut apic_logs = None;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if !line.starts_with("apic_logs") {
+            continue;
+        }
+        if let Some(eq) = line.find('=') {
+            let value = line[eq + 1..].trim().trim_matches('"');
+            if !value.is_empty() {
+                apic_logs = Some(value);
+            }
+        }
+    }
+    apic_logs
+}
+
 pub const PAGE_SIZE: u64 = 4096;
 pub const PTE_PRESENT: u64 = 1 << 0;
 pub const PTE_WRITABLE: u64 = 1 << 1;

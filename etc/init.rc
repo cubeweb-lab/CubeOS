@@ -1,0 +1,24 @@
+########################################################
+# Init-script for CTK SparkD(CubeOS sys-init utility)  #
+# Support CTK SparkD versions:                         #
+# - v0.0.1-001-alpha prerelease;                       #
+# - v0.0.1-002-alpha release;                          #
+# This script can:                                     #
+# - run programs;                                      #
+# - close programs;                                    #
+# - So, the end :) (because this is script for         #
+#                                   alpha (pre)release)#
+# Official CubeOS GitHub-repo:                         #
+# https://github.com/cubeweb-lab/CubeOS                #
+########################################################
+
+block = serial:
+start
+    exec "/bin/csh"
+end
+
+# (For example:)
+# block = serial:
+# start
+#   close pid=2
+# end

@@ -1,0 +1,79 @@
+
+========================================
+  CubeCORE v1.0 — Kernel Boot Sequence
+========================================
+[  OK ] Multiboot2 magic valid
+[INFO ] CPU: AuthenticAMD, Family 15, Model 107, Stepping 1
+[INFO ] Multiboot2 info at 0x13180000000000101318, size 2176 bytes
+[INFO ] Memory map: 7 entries
+  [0] Available  0x00000000000000000000 (639 KB)
+  [1] Reserved   0xFC00000000000009FC00 (1 KB)
+  [2] Reserved   0x000000000000000F0000 (64 KB)
+  [3] Available  0x00000000000000100000 (260992 KB)
+  [4] Reserved   0x0000000000000FFE0000 (128 KB)
+  [5] Reserved   0x000000000000FFFC0000 (256 KB)
+  [6] Reserved   0x0000000000FD00000000 (12582912 KB)
+[INFO ] Total RAM: 12543 MB, Available: 255 MB
+[INFO ] PMM: 65104 free pages (254 MB)
+[  OK ] Physical Memory Manager initialized
+[  OK ] Virtual memory manager initialized
+[  OK ] IDT initialized (256 entries)
+[  OK ] PIC remapped
+[APIC] Local APIC base = 0x000000000000FEE00000
+[  OK ] Local APIC initialized
+[  OK ] APIC timer 100 Hz
+[  OK ] Scheduler initialized
+[  OK ] I/O APIC IRQ1 → 0x21
+[  OK ] PIC disabled
+[  OK ] Interrupts enabled (IF=1)
+[INFO ] Initializing ATA controller...
+[  OK ] ATA controller detected
+[FS] BPB: bytes_per_sector=512, sectors_per_cluster=8, root_cluster=2, fat_start_lba=32, data_start_lba=1274
+[  OK ] FAT32 filesystem mounted
+[FS] Reading file: /SYSTEM/CONFIG/BOOT.CFG
+[FS] Looking for file: BOOT    CFG
+[FS] Looking for dir: SYSTEM     
+[FS] Listing directory cluster 2:
+  [0] CUBEOS     
+  [1] SYSTEM      [DIR]
+  [2] BIN         [DIR]
+  [3] HOME        [DIR]
+  [4] TMP         [DIR]
+  [5] ETC         [DIR]
+[FS] Looking for dir: CONFIG     
+[FS] Listing directory cluster 3:
+  [0] .           [DIR]
+  [1] ..          [DIR]
+  [2] KERNEL      [DIR]
+  [3] CONFIG      [DIR]
+[FS] Looking for: BOOTCFG
+[FS] Directory entries: 3
+  [0] .
+  [1] ..
+  [2] BOOTCFG
+[FS] File found! Reading...
+[  OK ] Boot config loaded
+[INFO ] Launching program from cmdline...
+[FS] Reading file: /bin/csh
+[FS] Looking for file: CSH        
+[FS] Looking for dir: BIN        
+[FS] Listing directory cluster 2:
+  [0] CUBEOS     
+  [1] SYSTEM      [DIR]
+  [2] BIN         [DIR]
+  [3] HOME        [DIR]
+  [4] TMP         [DIR]
+  [5] ETC         [DIR]
+[FS] Looking for: CSH
+[FS] Directory entries: 3
+  [0] .
+  [1] ..
+  [2] CSH
+[FS] File found! Reading...
+[TSS] Loaded OK
+[LOADER] TSS.rsp0 set
+[LOADER] AddressSpace created
+[ELF] Loaded segments
+[LOADER] ELF mapped at 0x0000008000000000
+[LOADER] User stack mapped
+[  OK ] Program laun
