@@ -15,7 +15,7 @@ pub struct VesaLogger {
 impl VesaLogger {
     pub fn new(fb_addr: u64, width: u32, height: u32, pitch: u32) -> Self {
         Self {
-            fb: fb_addr as *mut u32,
+            fb: crate::memory::phys_to_virt(fb_addr) as *mut u32,
             width: width as usize,
             height: height as usize,
             pitch: pitch as usize,

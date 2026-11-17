@@ -151,7 +151,8 @@ fn reap_zombies(cur: usize) {
                 crate::vmm::destroy_pml4(t.cr3);
             }
             for p in 0..t.stack_pages {
-                crate::memory::free_page(t.stack_base + (p as u64) * 4096);
+                let virt = t.stack_base + (p as u64) * 4096;
+                crate::memory::free_page(crate::memory::virt_to_phys(virt));
             }
             *t = Task::free();
             RQ.count -= 1;

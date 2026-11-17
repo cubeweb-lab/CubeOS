@@ -4,6 +4,21 @@ extern "C" {
     static _kernel_end: u8;
 }
 
+/// Base of the higher-half direct map. Physical address `p` is reachable at
+/// `PHYS_MAP_BASE + p` in every address space. Kept in sync with the PML4[256]
+/// entry installed by `boot.asm`.
+pub const PHYS_MAP_BASE: u64 = 0xFFFF_8000_0000_0000;
+
+/// Translates a physical address into the shared kernel direct map.
+pub fn phys_to_virt(phys: u64) -> u64 {
+    PHYS_MAP_BASE.wrapping_add(phys)
+}
+
+/// Translates an address from the kernel direct map back to physical memory.
+pub fn virt_to_phys(virt: u64) -> u64 {
+    virt.wrapping_sub(PHYS_MAP_BASE)
+}
+
 const MAX_PAGES: usize = 1024 * 1024;
 const PAGE_SIZE: usize = 4096;
 
@@ -60,6 +75,9 @@ pub fn free_pages() -> usize {
     unsafe { FREE_PAGES }
 }
 
+/// Allocates one zeroed page and returns its physical address. Callers that
+/// touch the page through the CPU must use [`phys_to_virt`]; only page tables
+/// and `CR3` consume the raw physical address.
 pub fn alloc_page() -> Option<u64> {
     unsafe {
         for i in 0..(MAX_PAGES / 64) {

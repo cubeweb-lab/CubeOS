@@ -345,8 +345,8 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
     let stack_a = memory::alloc_page().expect("stack A");
     let stack_b = memory::alloc_page().expect("stack B");
     unsafe {
-        core::ptr::write_bytes(stack_a as *mut u8, 0, 4096);
-        core::ptr::write_bytes(stack_b as *mut u8, 0, 4096);
+        core::ptr::write_bytes(memory::phys_to_virt(stack_a) as *mut u8, 0, 4096);
+        core::ptr::write_bytes(memory::phys_to_virt(stack_b) as *mut u8, 0, 4096);
     }
     extern "C" { static _kernel_end: u8; }
 
@@ -365,8 +365,8 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
     if stack_a < kend || stack_b < kend {
         serial::log_error("PMM returned stack below kernel end!");
     }
-    sched::spawn(task_a, stack_a, 1, sched::Qos::Interactive, b"task_a");
-    sched::spawn(task_b, stack_b, 1, sched::Qos::Utility, b"task_b");
+    sched::spawn(task_a, memory::phys_to_virt(stack_a), 1, sched::Qos::Interactive, b"task_a");
+    sched::spawn(task_b, memory::phys_to_virt(stack_b), 1, sched::Qos::Utility, b"task_b");
     serial::log_ok("Test tasks A/B spawned");
 
     kernel_main_loop(&ata, &fs)

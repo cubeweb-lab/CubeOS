@@ -140,7 +140,7 @@ pub fn load_elf(data: &[u8], space: &mut AddressSpace) -> Option<LoadedProgram> 
             let copy_end = (page + PAGE_SIZE).min(file_end);
             if copy_start < copy_end {
                 let src = data.as_ptr().wrapping_add((phdr.p_offset + (copy_start - phdr.p_vaddr)) as usize);
-                let dst = (frame + (copy_start - page)) as *mut u8;
+                let dst = crate::memory::phys_to_virt(frame + (copy_start - page)) as *mut u8;
                 unsafe { core::ptr::copy_nonoverlapping(src, dst, (copy_end - copy_start) as usize) };
             }
             page += PAGE_SIZE;
