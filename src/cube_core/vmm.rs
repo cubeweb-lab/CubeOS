@@ -1,13 +1,21 @@
-use crate::checks::{page_table_index, PAGE_SIZE, PTE_ADDR_MASK, PTE_PRESENT, PTE_USER, PTE_WRITABLE};
+use crate::checks::{page_table_index, PAGE_SIZE, PTE_ADDR_MASK, PTE_HUGE, PTE_PRESENT, PTE_USER, PTE_WRITABLE};
 use crate::memory;
 use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-pub const USER_BASE: u64 = 0x0000_0080_0000_0000;
+pub const USER_BASE: u64 = 0x0000_0000_0040_0000;
 pub const USER_LIMIT: u64 = 0x0000_8000_0000_0000;
 
 const ENTRIES: usize = 512;
 const TABLE_FLAGS: u64 = PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+const PD_SIZE: u64 = 0x20_0000;
+/// PML4 slots below this cover user space and stay private per process.
+const USER_SLOTS: usize = (USER_LIMIT >> 39) as usize;
+/// Number of 2 MiB kernel identity entries kept below `USER_BASE`.
+const KERNEL_LOW_PD_ENTRIES: usize = (USER_BASE / PD_SIZE) as usize;
+
+const _: () = assert!(USER_BASE % PD_SIZE == 0);
+const _: () = assert!(USER_BASE < USER_LIMIT);
 
 static KERNEL_PML4: AtomicU64 = AtomicU64::new(0);
 
@@ -32,8 +40,42 @@ pub struct AddressSpace {
 impl AddressSpace {
     pub fn new() -> Option<Self> {
         let pml4 = alloc_table()?;
-        let kernel_slot0 = read_entry(kernel_cr3(), 0);
-        write_entry(pml4, 0, kernel_slot0);
+        let kernel = kernel_cr3();
+
+        // The upper half holds the shared kernel direct map (and any future
+        // higher-half mappings), so copy those entries verbatim.
+        for idx in USER_SLOTS..ENTRIES {
+            let entry = read_entry(kernel, idx);
+            if entry != 0 {
+                write_entry(pml4, idx, entry);
+            }
+        }
+
+        // The lower half is private, but the kernel image must stay identity
+        // mapped: interrupts and syscalls enter while this CR3 is still loaded.
+        let pdpt = match alloc_table() {
+            Some(table) => table,
+            None => {
+                memory::free_page(pml4);
+                return None;
+            }
+        };
+        let pd = match alloc_table() {
+            Some(table) => table,
+            None => {
+                memory::free_page(pdpt);
+                memory::free_page(pml4);
+                return None;
+            }
+        };
+        let kernel_pdpt = read_entry(kernel, 0) & PTE_ADDR_MASK;
+        let kernel_pd = read_entry(kernel_pdpt, 0) & PTE_ADDR_MASK;
+        for idx in 0..KERNEL_LOW_PD_ENTRIES {
+            write_entry(pd, idx, read_entry(kernel_pd, idx));
+        }
+        write_entry(pdpt, 0, pd | TABLE_FLAGS);
+        write_entry(pml4, 0, pdpt | TABLE_FLAGS);
+
         Some(Self { pml4 })
     }
 
@@ -59,7 +101,7 @@ impl AddressSpace {
         }
 
         let frame = memory::alloc_page()?;
-        unsafe { core::ptr::write_bytes(frame as *mut u8, 0, PAGE_SIZE as usize) };
+        unsafe { core::ptr::write_bytes(memory::phys_to_virt(frame) as *mut u8, 0, PAGE_SIZE as usize) };
         if !self.map_leaf(virt, frame, writable) {
             memory::free_page(frame);
             return None;
@@ -109,10 +151,11 @@ impl AddressSpace {
     }
 }
 
-/// Frees a process PML4 and every table and frame below it. Slot 0 is the shared kernel
-/// mapping, so it is skipped. The caller must not have this PML4 loaded in CR3.
+/// Frees a process PML4 and every table and frame below it. Only slots that
+/// belong to user space are walkable: the shared direct map lives above
+/// `USER_LIMIT` and must stay owned by the kernel.
 pub fn destroy_pml4(pml4: u64) {
-    for idx in 1..ENTRIES {
+    for idx in 0..USER_SLOTS {
         let entry = read_entry(pml4, idx);
         if entry & PTE_PRESENT != 0 {
             free_tree(entry & PTE_ADDR_MASK, 3);
@@ -139,6 +182,9 @@ fn free_tree(table: u64, level: u32) {
     for idx in 0..ENTRIES {
         let entry = read_entry(table, idx);
         if entry & PTE_PRESENT == 0 { continue; }
+        // A huge entry maps physical memory directly (the kernel low identity
+        // region); the frame behind it is not owned by this address space.
+        if entry & PTE_HUGE != 0 { continue; }
         let child = entry & PTE_ADDR_MASK;
         if level > 1 { free_tree(child, level - 1); } else { memory::free_page(child); }
     }
@@ -147,7 +193,7 @@ fn free_tree(table: u64, level: u32) {
 
 fn alloc_table() -> Option<u64> {
     let table = memory::alloc_page()?;
-    unsafe { core::ptr::write_bytes(table as *mut u8, 0, PAGE_SIZE as usize) };
+    unsafe { core::ptr::write_bytes(memory::phys_to_virt(table) as *mut u8, 0, PAGE_SIZE as usize) };
     Some(table)
 }
 
@@ -173,11 +219,11 @@ pub fn debug_walk(cr3: u64, va: u64) {
 }
 
 fn read_entry(table: u64, idx: usize) -> u64 {
-    unsafe { *((table as *const u64).add(idx)) }
+    unsafe { *((memory::phys_to_virt(table) as *const u64).add(idx)) }
 }
 
 fn write_entry(table: u64, idx: usize, value: u64) {
-    unsafe { *((table as *mut u64).add(idx)) = value }
+    unsafe { *((memory::phys_to_virt(table) as *mut u64).add(idx)) = value }
 }
 
 fn read_cr3() -> u64 {

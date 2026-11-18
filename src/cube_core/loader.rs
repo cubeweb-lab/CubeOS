@@ -60,14 +60,15 @@ pub(crate) fn spawn_program(aspace: &mut AddressSpace, image: &[u8], path: &str,
     crate::serial::send_string("[LOADER] User stack mapped\n");
 
     let kernel_stack = crate::memory::alloc_page()?;
-    unsafe { core::ptr::write_bytes(kernel_stack as *mut u8, 0, 4096) };
+    let kernel_stack_base = crate::memory::phys_to_virt(kernel_stack);
+    unsafe { core::ptr::write_bytes(kernel_stack_base as *mut u8, 0, 4096) };
 
     let name = path.rsplit('/').next().unwrap_or("user");
     let pid = sched::spawn_user(
         aspace.pml4_phys(),
         program.entry_point,
         USER_STACK_TOP - 16,
-        kernel_stack,
+        kernel_stack_base,
         qos,
         name.as_bytes(),
     );

@@ -350,7 +350,9 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             if a1 <= 2 && a2 != 0 && a3 > 0 && a3 <= 0x10000 {
                 let ptr = a2 as *const u8;
                 for i in 0..a3 as usize {
-                    unsafe { crate::serial::send_byte(*ptr.add(i)); }
+                    let byte = unsafe { *ptr.add(i) };
+                    crate::serial::send_byte(byte);
+                    crate::vesa_log::console_putc(byte);
                 }
                 a3
             } else { 0 }
@@ -372,6 +374,7 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                             unsafe { *buf.add(n) = ch; }
                             n += 1;
                             unsafe { crate::serial::send_byte(ch); }
+                            crate::vesa_log::console_putc(ch);
                             if ch == b'\n' { break; }
                         }
                     } else if n == 0 {

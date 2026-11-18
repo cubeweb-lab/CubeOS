@@ -59,7 +59,7 @@ pub fn enable() -> u64 {
             wrmsr(IA32_APIC_BASE, base);
         }
         let addr = base & 0xFFFF_F000;
-        LAPIC_BASE = addr;
+        LAPIC_BASE = crate::memory::phys_to_virt(addr);
         addr
     }
 }
@@ -104,8 +104,9 @@ pub fn eoi() {
 // ===== I/O APIC =====
 
 unsafe fn ioapic_write(reg: u32, val: u32) {
-    let sel = IOAPIC_BASE as *mut u32;
-    let win = (IOAPIC_BASE + 0x10) as *mut u32;
+    let base = crate::memory::phys_to_virt(IOAPIC_BASE);
+    let sel = base as *mut u32;
+    let win = (base + 0x10) as *mut u32;
     write_volatile(sel, reg);
     write_volatile(win, val);
 }

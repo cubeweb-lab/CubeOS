@@ -4,7 +4,7 @@
 use crate::zigfs::write_file;
 
 /// Найти tag type 13 (SMBIOS) в Multiboot2 info и вернуть указатель на таблицы
-unsafe fn find_smbios_tables(mb_info_addr: u32) -> Option<(*const u8, usize)> {
+unsafe fn find_smbios_tables(mb_info_addr: u64) -> Option<(*const u8, usize)> {
     let total_size = *(mb_info_addr as *const u32) as usize;
     let mut ptr = mb_info_addr as usize + 8; // пропускаем total_size + reserved
     let end = mb_info_addr as usize + total_size;
@@ -107,7 +107,9 @@ pub fn format_comp() -> ([u8; 64], usize) {
     let mut out = [0u8; 64];
 
     // Пытаемся получить из SMBIOS
-    if let Some((tables, len)) = unsafe { find_smbios_tables(crate::MB_INFO_ADDR) } {
+    if let Some((tables, len)) = unsafe {
+        find_smbios_tables(crate::memory::phys_to_virt(crate::MB_INFO_ADDR as u64))
+    } {
         if let Some(name) = unsafe { find_product_name(tables, len) } {
             let end = name.iter().position(|&b| b == 0).unwrap_or(64);
             if end > 0 {

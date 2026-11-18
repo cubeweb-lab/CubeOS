@@ -1,7 +1,7 @@
 ENTRY(_start)
 
 SECTIONS {
-    . = 0x8000000000;
+    . = 0x400000;
 
     .text ALIGN(4K) : { *(.text .text.*) }
     .rodata ALIGN(4K) : { *(.rodata .rodata.*) }

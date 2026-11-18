@@ -15,7 +15,7 @@ pub struct VesaLogger {
 impl VesaLogger {
     pub fn new(fb_addr: u64, width: u32, height: u32, pitch: u32) -> Self {
         Self {
-            fb: fb_addr as *mut u32,
+            fb: crate::memory::phys_to_virt(fb_addr) as *mut u32,
             width: width as usize,
             height: height as usize,
             pitch: pitch as usize,
@@ -145,7 +145,7 @@ impl VesaLogger {
     }
 }
 
-// Global console used by the shell via the kernel API; the boot logger keeps its own cursor.
+// Global console shared by kernel boot logs and user-space stdout.
 static mut CONSOLE: Option<VesaLogger> = None;
 
 pub fn console_init(fb_addr: u64, width: u32, height: u32, pitch: u32) {
@@ -158,6 +158,22 @@ pub fn console_reset() {
     unsafe {
         if let Some(ref mut console) = CONSOLE {
             console.clear();
+        }
+    }
+}
+
+pub fn console_write_string(s: &str) {
+    unsafe {
+        if let Some(ref mut console) = CONSOLE {
+            console.write_string(s);
+        }
+    }
+}
+
+pub fn console_log(level: &str, msg: &str) {
+    unsafe {
+        if let Some(ref mut console) = CONSOLE {
+            console.log(level, msg);
         }
     }
 }
