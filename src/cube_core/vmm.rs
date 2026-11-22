@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::page_table::PageTableEntry;
 use x86_64::structures::paging::{
-    Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
+    Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate,
 };
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -74,6 +74,56 @@ pub fn map_kernel_region(virt_base: u64, pages: usize) -> bool {
                 memory::deallocate_frame(frame);
                 return false;
             }
+        }
+    }
+    true
+}
+
+/// Maps an existing physical range into the user half of `cr3`. The frames are
+/// borrowed (for example a linear framebuffer), so the process teardown must
+/// not return them to the PMM.
+pub fn map_user_phys_range(cr3: u64, virt_base: u64, phys_base: u64, pages: usize) -> bool {
+    if pages == 0 || !in_user_range(virt_base) || virt_base % memory::PAGE_SIZE as u64 != 0 {
+        return false;
+    }
+    let Some(end) = virt_base.checked_add(pages as u64 * memory::PAGE_SIZE as u64) else {
+        return false;
+    };
+    if end > USER_LIMIT {
+        return false;
+    }
+
+    let pml4 = memory::frame_containing(cr3 & !(memory::PAGE_SIZE as u64 - 1));
+    let mut mapper = unsafe {
+        OffsetPageTable::new(&mut *table_ptr(pml4), VirtAddr::new(PHYS_MAP_BASE))
+    };
+    let flags = PageTableFlags::PRESENT
+        | PageTableFlags::WRITABLE
+        | PageTableFlags::USER_ACCESSIBLE
+        | PageTableFlags::NO_CACHE;
+
+    for i in 0..pages {
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(
+            virt_base + i as u64 * memory::PAGE_SIZE as u64,
+        ));
+        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(
+            phys_base + i as u64 * memory::PAGE_SIZE as u64,
+        ));
+
+        if let Ok(existing) = mapper.translate_page(page) {
+            if existing.start_address() != frame.start_address() {
+                return false;
+            }
+            match unsafe { mapper.update_flags(page, flags) } {
+                Ok(flush) => flush.flush(),
+                Err(_) => return false,
+            }
+            continue;
+        }
+
+        match unsafe { mapper.map_to(page, frame, flags, &mut memory::BitmapFrameAllocator) } {
+            Ok(flush) => flush.flush(),
+            Err(_) => return false,
         }
     }
     true
@@ -289,7 +339,7 @@ fn free_tree(table: PhysFrame<Size4KiB>, level: u32) {
         if let Ok(child) = entry.frame() {
             if level > 1 {
                 free_tree(child, level - 1);
-            } else {
+            } else if !crate::fb::is_fb_frame(child.start_address().as_u64()) {
                 memory::deallocate_frame(child);
             }
         }

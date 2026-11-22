@@ -28,6 +28,7 @@ mod ring3;
 mod syscall;
 mod sched;
 mod vmm;
+mod fb;
 mod uptime;
 mod cpuinfo;
 mod hostinfo;
@@ -133,6 +134,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
     if let Some(fb) = mb_info.framebuffer {
         if fb.addr != 0 && fb.width > 0 && fb.height > 0 {
             vesa_log::console_init(fb.addr, fb.width, fb.height, fb.pitch);
+            crate::fb::init(fb);
             vesa_log::console_write_string("========================================\n");
             vesa_log::console_write_string("  CubeCORE v1.0 — Kernel Boot Sequence\n");
             vesa_log::console_write_string("========================================\n\n");

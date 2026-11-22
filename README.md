@@ -46,6 +46,26 @@ make run-hdd    # from the HDD image
 make test
 ```
 
+## Graphical user programs
+
+User programs can access the VESA linear framebuffer through two syscalls exposed by `cube_syscall`: `SYS_FB_INFO` (100) returns the geometry and channel masks, and `SYS_FB_MAP` (101) maps the physical framebuffer into the process at a fixed user address. The frames stay owned by the firmware, so process teardown does not return them to the PMM.
+
+```rust
+use cube_syscall as sys;
+
+let mut fb = sys::Framebuffer::new().expect("no 32-bit linear framebuffer");
+let background = fb.rgb(0, 0, 128);
+let red = fb.rgb(255, 0, 0);
+fb.fill(background);
+for y in 0..200 {
+    for x in 0..200 {
+        fb.put_pixel(x, y, red);
+    }
+}
+```
+
+`src/apps/gfxdemo` is a complete freestanding ELF example. Build it with `make gfxdemo`; `make hdd` also copies it to `/bin/gfxdemo`. To launch it at boot, set `cmdline="/bin/gfxdemo"` in `config/boot.cfg`, or use the same path with the `SYS_EXEC` syscall.
+
 Contributing
 
 We welcome Pull Requests! If you want to make major changes, please create an Issue first to discuss them. Check out our issues.

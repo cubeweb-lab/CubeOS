@@ -1,0 +1,16 @@
+[package]
+name = "gfxdemo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cube_syscall = { path = "../../libs/cube_syscall" }
+
+[[bin]]
+name = "gfxdemo"
+path = "src/main.rs"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true

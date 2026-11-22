@@ -21,6 +21,8 @@ pub const SYS_UNLINK:   u64 = 34;
 pub const SYS_RENAME:   u64 = 82;
 pub const SYS_DEBUG:    u64 = 78;
 pub const SYS_EXEC:     u64 = 99;
+pub const SYS_FB_INFO:  u64 = 100;
+pub const SYS_FB_MAP:   u64 = 101;
 
 // open() flags
 const O_WRONLY:    u64 = 0o1;
@@ -596,6 +598,25 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                 );
             }
         }
+        SYS_FB_INFO => {
+            let size = core::mem::size_of::<crate::fb::FbInfo>();
+            if a1 == 0 || a2 < size as u64 || !user_range_ok(a1, size) {
+                return u64::MAX;
+            }
+            match crate::fb::info() {
+                Some(info) => {
+                    unsafe {
+                        core::ptr::write_unaligned(a1 as *mut crate::fb::FbInfo, info);
+                    }
+                    0
+                }
+                None => u64::MAX,
+            }
+        }
+        SYS_FB_MAP => match crate::fb::map_current() {
+            Some(addr) => addr,
+            None => u64::MAX,
+        },
         SYS_EXEC => {
             // a1 = ptr to "path\\0", a2 = total length (включая \\0)
             if a1 == 0 || a2 == 0 || a2 > 512 {

@@ -10,6 +10,12 @@ pub struct FramebufferInfo {
     pub height: u32,
     pub bpp: u8,
     pub fb_type: u8,
+    pub red_field_position: u8,
+    pub red_mask_size: u8,
+    pub green_field_position: u8,
+    pub green_mask_size: u8,
+    pub blue_field_position: u8,
+    pub blue_mask_size: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -52,9 +58,23 @@ impl MultibootInfo {
                     let height = ptr::read_unaligned(fb_ptr.add(16) as *const u32);
                     let bpp = ptr::read_unaligned(fb_ptr.add(20) as *const u8);
                     let fb_type = ptr::read_unaligned(fb_ptr.add(21) as *const u8);
+                    let (mut red_field_position, mut red_mask_size) = (0u8, 0u8);
+                    let (mut green_field_position, mut green_mask_size) = (0u8, 0u8);
+                    let (mut blue_field_position, mut blue_mask_size) = (0u8, 0u8);
+                    if fb_type == 1 && size >= 30 {
+                        red_field_position = ptr::read_unaligned(fb_ptr.add(24));
+                        red_mask_size = ptr::read_unaligned(fb_ptr.add(25));
+                        green_field_position = ptr::read_unaligned(fb_ptr.add(26));
+                        green_mask_size = ptr::read_unaligned(fb_ptr.add(27));
+                        blue_field_position = ptr::read_unaligned(fb_ptr.add(28));
+                        blue_mask_size = ptr::read_unaligned(fb_ptr.add(29));
+                    }
 
                     framebuffer = Some(FramebufferInfo {
                         addr, pitch, width, height, bpp, fb_type,
+                        red_field_position, red_mask_size,
+                        green_field_position, green_mask_size,
+                        blue_field_position, blue_mask_size,
                     });
                 }
                 6 => {

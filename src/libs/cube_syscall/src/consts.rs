@@ -12,6 +12,8 @@ pub const SYS_RENAME:   usize = 82;
 pub const SYS_FSTAT:    usize = 50;
 pub const SYS_DEBUG:    usize = 78;
 pub const SYS_EXEC:     usize = 99;
+pub const SYS_FB_INFO:  usize = 100;
+pub const SYS_FB_MAP:   usize = 101;
 
 pub const O_RDONLY:    usize = 0o0;
 pub const O_WRONLY:    usize = 0o1;

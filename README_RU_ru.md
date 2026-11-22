@@ -46,6 +46,26 @@ make run-hdd    # из образа HDD
 make test
 ```
 
+## Графические программы
+
+Пользовательские программы получают доступ к линейному VESA-фреймбуферу через два syscall из `cube_syscall`: `SYS_FB_INFO` (100) возвращает геометрию и маски каналов, а `SYS_FB_MAP` (101) отображает физический фреймбуфер в адресное пространство процесса по фиксированному адресу. Кадры остаются собственностью прошивки, поэтому при завершении процесса они не возвращаются в PMM.
+
+```rust
+use cube_syscall as sys;
+
+let mut fb = sys::Framebuffer::new().expect("no 32-bit linear framebuffer");
+let background = fb.rgb(0, 0, 128);
+let red = fb.rgb(255, 0, 0);
+fb.fill(background);
+for y in 0..200 {
+    for x in 0..200 {
+        fb.put_pixel(x, y, red);
+    }
+}
+```
+
+`src/apps/gfxdemo` — полноценный пример отдельного ELF. Соберите его командой `make gfxdemo`; `make hdd` также копирует его в `/bin/gfxdemo`. Для запуска при загрузке укажите `cmdline="/bin/gfxdemo"` в `config/boot.cfg` или запустите этот путь через syscall `SYS_EXEC`.
+
 Участие в разработке
 
 Мы рады Pull Request'ам! Если вы хотите внести серьёзные изменения, сначала создайте Issue, чтобы обсудить их. Посмотрите наши задачи (issues).

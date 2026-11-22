@@ -15,6 +15,7 @@ ISO         := cubeos.iso
 HDD         := cubeos.img
 CSH         := target/apps/$(TARGET)/release/csh
 SPARKD      := target/apps/$(TARGET)/release/sparkd
+GFXDEMO     := target/apps/$(TARGET)/release/gfxdemo
 KERNEL_LIB  := target/$(TARGET)/release/libcube_core.a
 ZIG_OBJ     := zig/zig-out/lib/cube_zig.o
 INFO_IN     := info/*
@@ -34,7 +35,7 @@ INFO_OUT      := ::/system/info/
 
 QEMU_FLAGS  := -m 256M -serial stdio -no-reboot -no-shutdown
 
-.PHONY: all kernel csh iso hdd hdd-grub test run run-hdd clean FORCE
+.PHONY: all kernel csh sparkd gfxdemo iso hdd hdd-grub test run run-hdd clean FORCE
 
 all: kernel csh
 
@@ -44,14 +45,17 @@ csh: $(CSH)
 
 sparkd: $(SPARKD)
 
+gfxdemo: $(GFXDEMO)
+
 iso: $(ISO)
 
-hdd: $(HDD) $(KERNEL) $(CSH) $(SPARKD) config/boot.cfg
+hdd: $(HDD) $(KERNEL) $(CSH) $(SPARKD) $(GFXDEMO) config/boot.cfg
 	rm -rf $(SYSTEM_STAGE)
 	mkdir -p $(SYSTEM_STAGE)/system/kernel $(SYSTEM_STAGE)/system/config $(SYSTEM_STAGE)/system/info $(SYSTEM_STAGE)/bin $(SYSTEM_STAGE)/home $(SYSTEM_STAGE)/tmp $(SYSTEM_STAGE)/etc
 	cp $(KERNEL) $(SYSTEM_STAGE)/system/kernel/cubecore_1-0-0-dev.elf
 	cp $(CSH) $(SYSTEM_STAGE)/bin/csh
 	cp $(SPARKD) $(SYSTEM_STAGE)/bin/sparkd
+	cp $(GFXDEMO) $(SYSTEM_STAGE)/bin/gfxdemo
 	cp config/boot.cfg $(SYSTEM_STAGE)/system/config/boot.cfg
 	cp $(INFO_IN) $(SYSTEM_STAGE)/system/info/
 	truncate -s $(SYSTEM_BYTES) $(SYSTEM_IMG)
@@ -98,6 +102,11 @@ $(CSH): FORCE
 
 $(SPARKD): FORCE
 	cd src/apps/sparkd && RUSTFLAGS="-C link-arg=-Tlinker.ld -C relocation-model=static -C code-model=large" \
+		$(CARGO) build -Z build-std=core,compiler_builtins \
+		--target $(TARGET) --release --target-dir ../../../target/apps
+
+$(GFXDEMO): FORCE
+	cd src/apps/gfxdemo && RUSTFLAGS="-C link-arg=-Tlinker.ld -C relocation-model=static -C code-model=large" \
 		$(CARGO) build -Z build-std=core,compiler_builtins \
 		--target $(TARGET) --release --target-dir ../../../target/apps
 
