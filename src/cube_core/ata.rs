@@ -48,3 +48,37 @@ impl AtaDrive {
         result != 0
     }
 }
+
+/// Sector I/O for callers that only know the LBA (the ext4 block device).
+/// Unlike the `AtaDrive` methods these preserve the caller's interrupt flag:
+/// ext4 runs with interrupts masked and must not be preempted while it owns
+/// the ATA lock.
+pub fn read_sector_raw(lba: u32, buf: &mut [u8; 512]) -> bool {
+    ATA_LOCK.lock();
+    let flags: u64;
+    unsafe {
+        asm!("pushfq; pop {}", out(reg) flags);
+        asm!("cli");
+    }
+    let result = unsafe { ata_read_sector_c(lba, buf.as_mut_ptr()) };
+    ATA_LOCK.unlock();
+    if flags & 0x200 != 0 {
+        unsafe { asm!("sti") };
+    }
+    result != 0
+}
+
+pub fn write_sector_raw(lba: u32, buf: &[u8; 512]) -> bool {
+    ATA_LOCK.lock();
+    let flags: u64;
+    unsafe {
+        asm!("pushfq; pop {}", out(reg) flags);
+        asm!("cli");
+    }
+    let result = unsafe { ata_write_sector_c(lba, buf.as_ptr()) };
+    ATA_LOCK.unlock();
+    if flags & 0x200 != 0 {
+        unsafe { asm!("sti") };
+    }
+    result != 0
+}

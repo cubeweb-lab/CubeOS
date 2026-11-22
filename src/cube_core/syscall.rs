@@ -1,6 +1,6 @@
 // src/cube_core/syscall.rs
 use core::arch::asm;
-use crate::zigfs::{self, DirItem, EMPTY_ITEM};
+use crate::fs::{self, DirItem, EMPTY_ITEM};
 
 const IA32_EFER:  u32 = 0xC0000080;
 const IA32_STAR:  u32 = 0xC0000081;
@@ -246,16 +246,16 @@ unsafe fn cwd_snapshot() -> (u32, [u8; MAX_PATH], usize) {
 // Opens a file for writing. O_CREAT creates it when missing; without O_TRUNC the existing contents are kept.
 unsafe fn open_for_write(flags: u64, input: &[u8]) -> u64 {
     let (cwd_cluster, cwd_path, cwd_len) = cwd_snapshot();
-    if zigfs::resolve(cwd_cluster, &cwd_path[..cwd_len], input).is_none() {
+    if fs::resolve(cwd_cluster, &cwd_path[..cwd_len], input).is_none() {
         if flags & O_CREAT == 0 { return u64::MAX; }
-        if !zigfs::write_file(cwd_cluster, input, &[]) { return u64::MAX; }
+        if !fs::write_file(cwd_cluster, input, &[]) { return u64::MAX; }
     }
-    let resolved = match zigfs::resolve(cwd_cluster, &cwd_path[..cwd_len], input) {
+    let resolved = match fs::resolve(cwd_cluster, &cwd_path[..cwd_len], input) {
         Some(r) => r,
         None => return u64::MAX,
     };
     let abs_len = resolved.path_len as usize;
-    let stat = match zigfs::stat(0, &resolved.path[..abs_len]) {
+    let stat = match fs::stat(0, &resolved.path[..abs_len]) {
         Some(s) => s,
         None => return u64::MAX,
     };
@@ -269,7 +269,7 @@ unsafe fn open_for_write(flags: u64, input: &[u8]) -> u64 {
     if flags & O_TRUNC == 0 && stat.size > 0 {
         let write_bufs = &mut *core::ptr::addr_of_mut!(WRITE_BUF);
         let buf = &mut write_bufs[fd][..stat.size as usize];
-        match zigfs::read(0, &resolved.path[..abs_len], 0, buf) {
+        match fs::read(0, &resolved.path[..abs_len], 0, buf) {
             Some(n) => size = n,
             None => return u64::MAX,
         }
@@ -307,7 +307,7 @@ unsafe fn flush_write_fd(fd: usize) -> u64 {
     };
     let write_bufs = &*core::ptr::addr_of!(WRITE_BUF);
     let data = &write_bufs[fd][..size];
-    if zigfs::write_file(0, &path[..path_len], data) { 0 } else { u64::MAX }
+    if fs::write_file(0, &path[..path_len], data) { 0 } else { u64::MAX }
 }
 
 // Shift state from the make/break codes of the two shift keys.
@@ -400,7 +400,7 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                         let to_read = (a3 as usize).min(remaining);
                         if to_read == 0 { return 0; }
                         let out = core::slice::from_raw_parts_mut(a2 as *mut u8, to_read);
-                        match zigfs::read(0, &path[..path_len], offset, out) {
+                        match fs::read(0, &path[..path_len], offset, out) {
                             Some(n) => {
                                 if let FdKind::File { ref mut offset, .. } = FDS[fd].kind {
                                     *offset += n as u32;
@@ -428,12 +428,12 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             }
             unsafe {
                 let (cwd_cluster, cwd_path, cwd_len) = cwd_snapshot();
-                let resolved = match zigfs::resolve(cwd_cluster, &cwd_path[..cwd_len], &pathbuf[..pathlen]) {
+                let resolved = match fs::resolve(cwd_cluster, &cwd_path[..cwd_len], &pathbuf[..pathlen]) {
                     Some(r) => r,
                     None => return u64::MAX,
                 };
                 let abs_len = resolved.path_len as usize;
-                let stat = match zigfs::stat(0, &resolved.path[..abs_len]) {
+                let stat = match fs::stat(0, &resolved.path[..abs_len]) {
                     Some(s) => s,
                     None => return u64::MAX,
                 };
@@ -473,7 +473,7 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             let old = &buf[..sep];
             let new = &buf[sep + 1..len];
             unsafe {
-                if zigfs::rename(CWD_CLUSTER, old, new) { 0 } else { u64::MAX }
+                if fs::rename(CWD_CLUSTER, old, new) { 0 } else { u64::MAX }
             }
         }
         SYS_GETDENTS => {
@@ -485,7 +485,7 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                     _ => return u64::MAX,
                 };
                 let items = &mut *core::ptr::addr_of_mut!(DIR_ITEMS);
-                let count = match zigfs::list(0, &path[..path_len], items) {
+                let count = match fs::list(0, &path[..path_len], items) {
                     Some(n) => n,
                     None => return u64::MAX,
                 };
@@ -535,7 +535,7 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             };
             unsafe {
                 let (cwd_cluster, cwd_path, cwd_len) = cwd_snapshot();
-                let resolved = match zigfs::resolve(cwd_cluster, &cwd_path[..cwd_len], &pathbuf[..pathlen]) {
+                let resolved = match fs::resolve(cwd_cluster, &cwd_path[..cwd_len], &pathbuf[..pathlen]) {
                     Some(r) => r,
                     None => return u64::MAX,
                 };
@@ -554,7 +554,7 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                 Some(n) => n, None => return u64::MAX,
             };
             unsafe {
-                if zigfs::mkdir(CWD_CLUSTER, &pathbuf[..pathlen]) { 0 } else { u64::MAX }
+                if fs::mkdir(CWD_CLUSTER, &pathbuf[..pathlen]) { 0 } else { u64::MAX }
             }
         }
         SYS_UNLINK => {
@@ -565,10 +565,10 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             };
             unsafe {
                 // unlink removes only files; directories go through rmdir semantics
-                if let Some(st) = zigfs::stat(CWD_CLUSTER, &pathbuf[..pathlen]) {
+                if let Some(st) = fs::stat(CWD_CLUSTER, &pathbuf[..pathlen]) {
                     if st.is_dir != 0 { return u64::MAX; }
                 }
-                if zigfs::unlink(CWD_CLUSTER, &pathbuf[..pathlen]) { 0 } else { u64::MAX }
+                if fs::unlink(CWD_CLUSTER, &pathbuf[..pathlen]) { 0 } else { u64::MAX }
             }
         }
         SYS_DEBUG => {
@@ -625,7 +625,7 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 
             // Читаем файл через zigfs
             const START_DIR: u32 = 0; // корень
-            let size = match crate::zigfs::read(START_DIR, path.as_bytes(), 0, &mut program_buf) {
+            let size = match crate::fs::read(START_DIR, path.as_bytes(), 0, &mut program_buf) {
                 Some(n) => n,
                 None => {
                     crate::serial::send_string("[SYSCALL] EXEC: file not found or read error: ");

@@ -23,6 +23,12 @@ HDD_SIZE_MB := 512
 # Partition 1 is the boot FAT32 volume, partition 2 is the system volume that the kernel mounts (MBR index 1).
 BOOT_OFFSET   := 1048576
 SYSTEM_OFFSET := 210763776
+SYSTEM_START  := 411648
+HDD_SECTORS   := $(shell expr $(HDD_SIZE_MB) \* 2048)
+SYSTEM_SECTORS := $(shell expr $(HDD_SECTORS) - $(SYSTEM_START))
+SYSTEM_BYTES  := $(shell expr $(SYSTEM_SECTORS) \* 512)
+SYSTEM_STAGE  := $(BUILD)/system-root
+SYSTEM_IMG    := $(BUILD)/system.ext4
 SYSTEM_KERNEL := ::/system/kernel/cubecore_1-0-0-dev.elf
 INFO_OUT      := ::/system/info/
 
@@ -40,21 +46,24 @@ sparkd: $(SPARKD)
 
 iso: $(ISO)
 
-hdd: $(HDD) $(KERNEL) $(CSH) config/boot.cfg
-	-mmd -i $(HDD)@@$(SYSTEM_OFFSET) ::/system ::/system/kernel ::/system/config ::/system/info ::/bin ::/home ::/tmp ::/etc
-	mcopy -o -i $(HDD)@@$(SYSTEM_OFFSET) $(KERNEL) $(SYSTEM_KERNEL)
-	mcopy -o -i $(HDD)@@$(SYSTEM_OFFSET) $(CSH) ::/bin/csh
-	mcopy -o -i $(HDD)@@$(SYSTEM_OFFSET) $(SPARKD) ::/bin/sparkd
-	mcopy -o -i $(HDD)@@$(SYSTEM_OFFSET) config/boot.cfg ::/system/config/boot.cfg
-	mcopy -o -i $(HDD)@@$(SYSTEM_OFFSET) $(INFO_IN) $(INFO_OUT)
+hdd: $(HDD) $(KERNEL) $(CSH) $(SPARKD) config/boot.cfg
+	rm -rf $(SYSTEM_STAGE)
+	mkdir -p $(SYSTEM_STAGE)/system/kernel $(SYSTEM_STAGE)/system/config $(SYSTEM_STAGE)/system/info $(SYSTEM_STAGE)/bin $(SYSTEM_STAGE)/home $(SYSTEM_STAGE)/tmp $(SYSTEM_STAGE)/etc
+	cp $(KERNEL) $(SYSTEM_STAGE)/system/kernel/cubecore_1-0-0-dev.elf
+	cp $(CSH) $(SYSTEM_STAGE)/bin/csh
+	cp $(SPARKD) $(SYSTEM_STAGE)/bin/sparkd
+	cp config/boot.cfg $(SYSTEM_STAGE)/system/config/boot.cfg
+	cp $(INFO_IN) $(SYSTEM_STAGE)/system/info/
+	truncate -s $(SYSTEM_BYTES) $(SYSTEM_IMG)
+	mke2fs -q -F -t ext4 -b 4096 -L CUBEOS -d $(SYSTEM_STAGE) $(SYSTEM_IMG)
+	dd if=$(SYSTEM_IMG) of=$(HDD) bs=512 seek=$(SYSTEM_START) conv=notrunc status=none
 	mcopy -o -i $(HDD)@@$(BOOT_OFFSET) $(KERNEL) ::/kernel.elf
 	@echo "  HDD image updated: $(HDD)"
 
 $(HDD):
 	dd if=/dev/zero of=$@ bs=1M count=$(HDD_SIZE_MB) status=none
-	printf 'label: dos\n2048, 409600, c, *\n411648, , c\n' | sfdisk -q $@
+	printf 'label: dos\n2048, 409600, c, *\n411648, , 83\n' | sfdisk -q $@
 	mformat -i $@@@$(BOOT_OFFSET) -F -v CUBEBOOT ::
-	mformat -i $@@@$(SYSTEM_OFFSET) -F -v CUBEOS ::
 
 # Needs root for the loop device and GRUB install; the image itself is built without root.
 hdd-grub: hdd config/grub-hdd.cfg
@@ -73,7 +82,7 @@ FORCE:
 
 $(KERNEL_LIB): FORCE
 	cd src/cube_core && RUSTFLAGS="-C link-arg=-nostdlib -C relocation-model=static -C code-model=kernel" \
-		$(CARGO) build -Z build-std=core,compiler_builtins -Z build-std-features=compiler-builtins-mem \
+		$(CARGO) build -Z build-std=core,alloc,compiler_builtins -Z build-std-features=compiler-builtins-mem \
 		--target $(TARGET) --release --target-dir ../../target $(if $(FEATURES),--features $(FEATURES))
 
 $(ZIG_OBJ): FORCE

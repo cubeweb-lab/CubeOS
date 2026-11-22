@@ -45,6 +45,40 @@ pub fn init() {
     KERNEL_PML4.store(frame.start_address().as_u64(), Ordering::Relaxed);
 }
 
+/// Maps `pages` freshly allocated 4 KiB frames at `virt_base` in the kernel
+/// address space. The kernel heap uses this instead of a static array: user
+/// address spaces only identity-map the first 2 MiB of the kernel, while the
+/// higher half is shared verbatim.
+pub fn map_kernel_region(virt_base: u64, pages: usize) -> bool {
+    let pml4 = kernel_pml4();
+    let mut mapper = unsafe {
+        OffsetPageTable::new(&mut *table_ptr(pml4), VirtAddr::new(PHYS_MAP_BASE))
+    };
+    for i in 0..pages {
+        let Some(frame) = memory::allocate_frame() else {
+            return false;
+        };
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(
+            virt_base + i as u64 * memory::PAGE_SIZE as u64,
+        ));
+        match unsafe {
+            mapper.map_to(
+                page,
+                frame,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                &mut memory::BitmapFrameAllocator,
+            )
+        } {
+            Ok(flush) => flush.flush(),
+            Err(_) => {
+                memory::deallocate_frame(frame);
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Extends the shared direct map from the boot-mapped 4 GiB up to `max_phys`
 /// using 2 MiB pages. Runs once from [`crate::memory::init`] while only frames
 /// below the current mapping can be allocated.

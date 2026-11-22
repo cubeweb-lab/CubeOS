@@ -1,6 +1,9 @@
 #![no_std]
 #![feature(abi_x86_interrupt)]
+#![feature(alloc_error_handler)]
 #![allow(static_mut_refs)]
+
+extern crate alloc;
 
 mod serial;
 mod vga;
@@ -9,9 +12,11 @@ mod idt;
 mod interrupts;
 mod apic;
 mod memory;
+mod heap;
 mod sync;
 mod panic;
 mod fs;
+mod ext4fs;
 mod vesa_log;
 mod ata;
 mod zigfs;
@@ -29,10 +34,8 @@ mod hostinfo;
 
 use multiboot::MultibootInfo;
 use core::arch::asm;
-use core::sync::atomic::Ordering;
 use fs::FSManager;
 use ata::AtaDrive;
-use sched::Qos;
 
 pub static mut MB_INFO_ADDR: u32 = 0;
 
@@ -216,6 +219,12 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
     vmm::init();
     serial::log_ok("Virtual memory manager initialized");
 
+    if !heap::init() {
+        serial::log_error("Kernel heap mapping failed");
+        loop { unsafe { core::arch::asm!("cli; hlt") } }
+    }
+    serial::log_ok("Kernel heap initialized");
+
     // 9. IDT
     unsafe { idt::init_idt(); }
     serial::log_ok("IDT initialized (256 entries)");
@@ -275,17 +284,22 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
         log_both("OK", "ATA controller detected");
 
         if fs.mount_label(&ata, b"CUBEOS") {
-            log_both("OK", "FAT volume mounted (Zig driver)");
+            log_both("OK", "Root volume mounted");
 
-            // 18. Write CPU-model to /system/info/cpu-m
+            // 18. Write CPU-model and uptime to /system/info
             crate::cpuinfo::write_cpu_file(2);
+            crate::uptime::write_uptime_file();
 
             if cfg!(feature = "kernel-debug") {
-                zigfs::self_test();
+                if ext4fs::is_mounted() {
+                    ext4fs::self_test();
+                } else {
+                    zigfs::self_test();
+                }
             }
 
             let mut config_buf = [0u8; 4096];
-            if let Some(size) = fs.read_file("/SYSTEM/CONFIG/BOOT.CFG", &mut config_buf) {
+            if let Some(size) = fs.read_file("/system/config/boot.cfg", &mut config_buf) {
                 if let Ok(text) = core::str::from_utf8(&config_buf[..size]) {
                     log_both("OK", "Boot config loaded");
 
@@ -310,7 +324,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
                         log_both("INFO", "No cmdline, skipping launch");
                     }
 
-                    kernel_main_loop(&ata, &fs)
+                    kernel_main_loop()
                 }
                 if let Ok(text) = core::str::from_utf8(&config_buf[..size]) {
                     for line in text.lines() {
@@ -355,15 +369,12 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
     sched::spawn(task_b, memory::phys_to_virt(stack_b.start_address().as_u64()), 1, sched::Qos::Utility, b"task_b");
     serial::log_ok("Test tasks A/B spawned");
 
-    kernel_main_loop(&ata, &fs)
+    kernel_main_loop()
 }
 
 #[no_mangle]
-pub extern "C" fn kernel_main_loop(ata: &AtaDrive, fs: &FSManager) -> ! {
+pub extern "C" fn kernel_main_loop() -> ! {
     crate::serial::send_string("\n[KERNEL] Back in main loop\n");
-
-    let mut last_ticks = 0u64;
-    let mut buf = [0u8; 20];
 
     /*if apic_logs = "false" {
      * crate::serial::send_string("\n[INFO] APIC logs is disabled\n");
@@ -389,7 +400,6 @@ pub extern "C" fn kernel_main_loop(ata: &AtaDrive, fs: &FSManager) -> ! {
     }*/
 
     loop {
-        crate::uptime::write_uptime_file(ata, fs);
         unsafe { core::arch::asm!("hlt") }
     }
 }
