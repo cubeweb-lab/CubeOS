@@ -105,8 +105,11 @@ pub fn init_syscall(kernel_rsp: u64) {
         // and the iretq that returned from it raised #GP.
         wrmsr(IA32_STAR, (0x10u64 << 48) | (0x08u64 << 32));
         wrmsr(IA32_LSTAR, syscall_entry as u64);
-        // IF stays set in syscalls so the keyboard and timer IRQs run while the shell waits in stdin reads.
-        wrmsr(IA32_FMASK, 0x500);
+        // Mask TF, IF and DF on entry. IF must be clear until the entry stub has
+        // switched to the kernel stack, or an IRQ taken between `syscall` and the
+        // RSP swap pushes its frame onto the user stack (kernel then runs on it).
+        // Blocking stdin reads re-enable interrupts explicitly once safe.
+        wrmsr(IA32_FMASK, 0x700);
 
         crate::serial::send_string("[SYSCALL] syscall/sysret configured\n");
         crate::serial::send_string("[TSS] rsp0=");

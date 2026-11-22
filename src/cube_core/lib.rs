@@ -274,7 +274,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
     if ata.exists {
         log_both("OK", "ATA controller detected");
 
-        if fs.mount(&ata, 1) {
+        if fs.mount_label(&ata, b"CUBEOS") {
             log_both("OK", "FAT volume mounted (Zig driver)");
 
             // 18. Write CPU-model to /system/info/cpu-m
@@ -334,16 +334,10 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
 
     // === Тест планировщика: две задачи ===
 
-    let stack_a = memory::alloc_page().expect("stack A");
-    let stack_b = memory::alloc_page().expect("stack B");
-    unsafe {
-        core::ptr::write_bytes(memory::phys_to_virt(stack_a) as *mut u8, 0, 4096);
-        core::ptr::write_bytes(memory::phys_to_virt(stack_b) as *mut u8, 0, 4096);
-    }
+    let stack_a = memory::allocate_frame().expect("stack A");
+    let stack_b = memory::allocate_frame().expect("stack B");
     extern "C" { static _kernel_end: u8; }
 
-    let stack_a = memory::alloc_page().expect("stack A");
-    let stack_b = memory::alloc_page().expect("stack B");
     let kend = unsafe { &_kernel_end as *const u8 as u64 };
     serial::send_string("[SCHED] _kernel_end = 0x");
     serial::send_string(write_hex(&mut buf, kend));
@@ -354,11 +348,11 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
     serial::send_string(write_hex(&mut buf, task_b as u64));
     serial::send_string("\n");
 
-    if stack_a < kend || stack_b < kend {
+    if stack_a.start_address().as_u64() < kend || stack_b.start_address().as_u64() < kend {
         serial::log_error("PMM returned stack below kernel end!");
     }
-    sched::spawn(task_a, memory::phys_to_virt(stack_a), 1, sched::Qos::Interactive, b"task_a");
-    sched::spawn(task_b, memory::phys_to_virt(stack_b), 1, sched::Qos::Utility, b"task_b");
+    sched::spawn(task_a, memory::phys_to_virt(stack_a.start_address().as_u64()), 1, sched::Qos::Interactive, b"task_a");
+    sched::spawn(task_b, memory::phys_to_virt(stack_b.start_address().as_u64()), 1, sched::Qos::Utility, b"task_b");
     serial::log_ok("Test tasks A/B spawned");
 
     kernel_main_loop(&ata, &fs)

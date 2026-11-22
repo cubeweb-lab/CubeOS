@@ -152,7 +152,7 @@ fn reap_zombies(cur: usize) {
             }
             for p in 0..t.stack_pages {
                 let virt = t.stack_base + (p as u64) * 4096;
-                crate::memory::free_page(crate::memory::virt_to_phys(virt));
+                crate::memory::deallocate_frame(crate::memory::virt_to_frame(virt));
             }
             *t = Task::free();
             RQ.count -= 1;

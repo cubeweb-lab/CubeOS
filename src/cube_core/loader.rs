@@ -59,9 +59,8 @@ pub(crate) fn spawn_program(aspace: &mut AddressSpace, image: &[u8], path: &str,
     }
     crate::serial::send_string("[LOADER] User stack mapped\n");
 
-    let kernel_stack = crate::memory::alloc_page()?;
-    let kernel_stack_base = crate::memory::phys_to_virt(kernel_stack);
-    unsafe { core::ptr::write_bytes(kernel_stack_base as *mut u8, 0, 4096) };
+    let kernel_stack = crate::memory::allocate_frame()?;
+    let kernel_stack_base = crate::memory::phys_to_virt(kernel_stack.start_address().as_u64());
 
     let name = path.rsplit('/').next().unwrap_or("user");
     let pid = sched::spawn_user(
@@ -73,7 +72,7 @@ pub(crate) fn spawn_program(aspace: &mut AddressSpace, image: &[u8], path: &str,
         name.as_bytes(),
     );
     if pid.is_none() {
-        crate::memory::free_page(kernel_stack);
+        crate::memory::deallocate_frame(kernel_stack);
     }
     pid
 }
