@@ -66,6 +66,10 @@ for y in 0..200 {
 
 `src/apps/gfxdemo` is a complete freestanding ELF example. Build it with `make gfxdemo`; `make hdd` also copies it to `/bin/gfxdemo`. To launch it at boot, set `cmdline="/bin/gfxdemo"` in `config/boot.cfg`, or use the same path with the `SYS_EXEC` syscall.
 
+## Syscall reference
+
+The complete syscall ABI, including register conventions, error values, file descriptor limits, directory record layout, open flags, and framebuffer structures, is documented in [docs/syscalls.md](docs/syscalls.md).
+
 Contributing
 
 We welcome Pull Requests! If you want to make major changes, please create an Issue first to discuss them. Check out our issues.
