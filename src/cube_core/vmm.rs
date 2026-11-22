@@ -5,13 +5,15 @@ use x86_64::structures::paging::page_table::PageTableEntry;
 use x86_64::structures::paging::{
     Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
 };
-use x86_64::VirtAddr;
+use x86_64::{PhysAddr, VirtAddr};
 
 pub const USER_BASE: u64 = 0x0000_0000_0040_0000;
 pub const USER_LIMIT: u64 = 0x0000_8000_0000_0000;
 
 const ENTRIES: usize = 512;
 const PD_SIZE: u64 = 0x20_0000;
+const GIB: u64 = 1 << 30;
+const DIRECT_MAP_SLOT: usize = ((PHYS_MAP_BASE >> 39) & 0x1FF) as usize;
 /// PML4 slots below this cover user space and stay private per process.
 const USER_SLOTS: usize = (USER_LIMIT >> 39) as usize;
 /// Number of 2 MiB kernel identity entries kept below `USER_BASE`.
@@ -41,6 +43,71 @@ fn write_entry(frame: PhysFrame<Size4KiB>, idx: usize, entry: PageTableEntry) {
 pub fn init() {
     let (frame, _) = Cr3::read();
     KERNEL_PML4.store(frame.start_address().as_u64(), Ordering::Relaxed);
+}
+
+/// Extends the shared direct map from the boot-mapped 4 GiB up to `max_phys`
+/// using 2 MiB pages. Runs once from [`crate::memory::init`] while only frames
+/// below the current mapping can be allocated.
+pub fn extend_direct_map(max_phys: u64) {
+    let mapped = memory::mapped_limit();
+    if max_phys <= mapped {
+        return;
+    }
+
+    let (pml4_frame, _) = Cr3::read();
+    let pml4_phys = pml4_frame.start_address().as_u64();
+    let pml4 = unsafe { &mut *(memory::phys_to_virt(pml4_phys) as *mut PageTable) };
+    let mut pdpt = match pml4[DIRECT_MAP_SLOT].frame() {
+        Ok(frame) => frame,
+        Err(_) => return,
+    };
+
+    let first_region = (mapped / GIB) as usize;
+    let last_region = ((max_phys + GIB - 1) / GIB) as usize;
+
+    for region in first_region..last_region {
+        let block = region / ENTRIES;
+        let slot = region % ENTRIES;
+
+        // Each PML4 slot spans 512 GiB; the boot PDPT already covers block 0.
+        if slot == 0 {
+            let frame = match memory::allocate_frame() {
+                Some(frame) => frame,
+                None => break,
+            };
+            let mut entry = PageTableEntry::new();
+            entry.set_frame(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+            pml4[DIRECT_MAP_SLOT + block] = entry;
+            pdpt = frame;
+        }
+
+        let pd_frame = match memory::allocate_frame() {
+            Some(frame) => frame,
+            None => break,
+        };
+        let pd = unsafe {
+            &mut *(memory::phys_to_virt(pd_frame.start_address().as_u64()) as *mut PageTable)
+        };
+        let base = region as u64 * GIB;
+        for idx in 0..ENTRIES {
+            let phys = base + idx as u64 * PD_SIZE;
+            let mut entry = PageTableEntry::new();
+            entry.set_addr(
+                PhysAddr::new(phys),
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::HUGE_PAGE,
+            );
+            pd[idx] = entry;
+        }
+
+        let pdpt_table =
+            unsafe { &mut *(memory::phys_to_virt(pdpt.start_address().as_u64()) as *mut PageTable) };
+        let mut entry = PageTableEntry::new();
+        entry.set_frame(pd_frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+        pdpt_table[slot] = entry;
+
+        x86_64::instructions::tlb::flush_all();
+        memory::set_mapped_limit((region as u64 + 1) * GIB);
+    }
 }
 
 fn kernel_pml4() -> PhysFrame<Size4KiB> {
