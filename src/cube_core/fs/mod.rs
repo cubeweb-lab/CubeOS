@@ -21,6 +21,7 @@ enum Kind {
     Ext4,
 }
 
+// TODO: replace the single global KIND with a mount table plus a FileOps/VfsNode trait so FAT and ext4 can be mounted together and paths route across mount points instead of selecting one root filesystem at boot.
 static mut KIND: Kind = Kind::None;
 
 fn kind() -> Kind {
