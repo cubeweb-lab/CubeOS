@@ -2,6 +2,8 @@ use crate::fs::FSManager;
 use crate::vmm::{AddressSpace, USER_LIMIT};
 use crate::sched::{self, Qos};
 
+// TODO: map ELF segments directly from the filesystem instead of copying the
+// whole image into this buffer; it caps executables at 64 KiB.
 pub const MAX_PROGRAM_SIZE: usize = 65536;
 
 #[repr(C, align(4096))]

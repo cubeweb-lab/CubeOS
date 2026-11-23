@@ -44,6 +44,8 @@ pub struct Framebuffer {
 impl Framebuffer {
     pub fn new() -> Option<Self> {
         let info = info()?;
+        // TODO: support 16-bit and 24-bit direct-color modes; FbInfo already
+        // carries the masks needed to decode them.
         if info.bpp != 32
             || info.fb_type != 1
             || info.pitch % 4 != 0

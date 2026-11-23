@@ -340,6 +340,9 @@ fn free_tree(table: PhysFrame<Size4KiB>, level: u32) {
             if level > 1 {
                 free_tree(child, level - 1);
             } else if !crate::fb::is_fb_frame(child.start_address().as_u64()) {
+                // FIXME: borrowed MMIO ownership is inferred from the
+                // framebuffer's physical range. Track borrowed frames
+                // explicitly before mapping other devices into user space.
                 memory::deallocate_frame(child);
             }
         }

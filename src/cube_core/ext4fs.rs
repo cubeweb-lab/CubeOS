@@ -33,6 +33,9 @@ impl AtaBlockDevice {
 }
 
 impl BlockDevice for AtaBlockDevice {
+    // FIXME: BlockDevice is infallible, so failed reads return zeroed blocks
+    // and failed writes silently truncate metadata updates. Switch to fallible
+    // block access once ext4_rs exposes it.
     fn read_offset(&self, offset: usize) -> Vec<u8> {
         let mut out = vec![0u8; BLOCK_SIZE];
         let first = offset / 512;
@@ -97,6 +100,8 @@ fn with_fs<R>(f: impl FnOnce(&Ext4) -> R) -> Option<R> {
 }
 
 pub fn mount(base_lba: u32) -> bool {
+    // TODO: validate the superblock and return false when Ext4::open fails;
+    // this function currently reports success unconditionally.
     let fs = Ext4::open(Arc::new(AtaBlockDevice { base_lba }));
     LOCK.lock();
     unsafe { FS = Some(fs) };
@@ -399,6 +404,9 @@ pub fn rmdir(path: &[u8]) -> bool {
 }
 
 pub fn rename(old: &[u8], new: &[u8]) -> bool {
+    // TODO: use ext4_rs directory-entry/inode operations instead of copying
+    // file data; this path is non-atomic, rejects directories, and buffers the
+    // whole file in RAM.
     let Some(stat) = stat(old) else {
         return false;
     };

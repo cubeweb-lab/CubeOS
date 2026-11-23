@@ -66,6 +66,9 @@ enum FdKind {
 #[derive(Copy, Clone)]
 struct Fd { kind: FdKind }
 
+// FIXME: FDS, CWD_*, and WRITE_BUF are global, so user tasks share descriptors
+// and working directories. Move this state into the task/address-space object
+// before supporting concurrent interactive jobs.
 static mut FDS: [Fd; MAX_FD] = [Fd { kind: FdKind::Free }; MAX_FD];
 
 // Текущая директория: кластер (0 = корень) и абсолютный путь
@@ -353,6 +356,8 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                 return unsafe { write_file_fd(a1 as usize, a2, a3) };
             }
             if a1 <= 2 && a2 != 0 && a3 > 0 && a3 <= 0x10000 {
+                // FIXME: validate a2/a3 with user_range_ok first; otherwise a
+                // bad pointer can make the kernel read and echo kernel memory.
                 let ptr = a2 as *const u8;
                 for i in 0..a3 as usize {
                     let byte = unsafe { *ptr.add(i) };
@@ -368,6 +373,8 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 
             // stdin — клавиатура (без sti/hlt!)
             if fd == 0 {
+                // FIXME: validate a2/a3 with user_range_ok before writing
+                // keyboard bytes; this path currently trusts the destination.
                 let buf = a2 as *mut u8;
                 let max = a3 as usize;
                 let mut n = 0usize;
@@ -575,6 +582,8 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
         }
         SYS_DEBUG => {
             if a2 != 0 && a3 > 0 && a3 <= 0x10000 {
+                // FIXME: validate the message range with user_range_ok to stop
+                // kernel pointers from being printed to the serial console.
                 let ptr = a2 as *const u8;
                 crate::serial::send_string("[USER] ");
                 for i in 0..a3 as usize {
