@@ -1,4 +1,8 @@
+// NovumOS port: PMM bitmap, scan hint, and free-page accounting adapted from
+// NovumOS zig/kernel/memory.zig. Copyright 2025-2026 MinecAnton209.
+// Apache-2.0; see NOTICE for provenance.
 use crate::multiboot::MemoryMapEntry;
+use crate::sync::IrqLock;
 use core::ptr;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
 use x86_64::PhysAddr;
@@ -43,8 +47,14 @@ static mut BITMAP: *mut u64 = ptr::null_mut();
 static mut BITMAP_WORDS: usize = 0;
 static mut TOTAL_PAGES: usize = 0;
 static mut FREE_PAGES: usize = 0;
+/// Hint for the next frame scan. Frames before it are normally still busy,
+/// so starting from zero would rescan the reserved kernel image on every call.
+static mut LAST_FREE_PAGE: usize = 0;
 /// Highest physical address currently reachable through the direct map.
 static mut MAPPED_LIMIT: u64 = BOOT_MAPPED;
+/// PMM state is also touched from interrupt context (page faults, future SMP),
+/// so the lock masks interrupts instead of only spinning.
+static PMM_LOCK: IrqLock = IrqLock::new();
 
 fn page_bit(page: usize) -> (usize, u64) {
     (page / 64, 1u64 << (page % 64))
@@ -82,6 +92,7 @@ pub fn init(memory_map: &[MemoryMapEntry]) {
         BITMAP = bitmap;
         BITMAP_WORDS = words;
         MAPPED_LIMIT = BOOT_MAPPED;
+        LAST_FREE_PAGE = 0;
 
         ptr::write_bytes(bitmap as *mut u8, 0, words * 8);
 
@@ -143,31 +154,12 @@ pub fn free_pages() -> usize {
 /// address; callers that touch the page through the CPU must use [`phys_to_virt`].
 /// Only page tables and `CR3` consume the raw physical address.
 pub fn allocate_frame() -> Option<PhysFrame<Size4KiB>> {
-    unsafe {
-        for word in 0..BITMAP_WORDS {
-            let bits = *BITMAP.add(word);
-            if bits == 0 {
-                continue;
-            }
-            let bit = bits.trailing_zeros() as usize;
-            let page = word * 64 + bit;
-            let phys = page as u64 * PAGE_SIZE as u64;
-            // The scan is ascending, so every later free page is also above
-            // the direct map during boot-time extension.
-            if phys >= MAPPED_LIMIT {
-                return None;
-            }
-            *BITMAP.add(word) &= !(1u64 << bit);
-            FREE_PAGES -= 1;
-
-            ptr::write_bytes(phys_to_virt(phys) as *mut u8, 0, PAGE_SIZE);
-            return Some(PhysFrame::containing_address(PhysAddr::new(phys)));
-        }
-        None
-    }
+    let _guard = PMM_LOCK.lock();
+    unsafe { allocate_frame_locked() }
 }
 
 pub fn deallocate_frame(frame: PhysFrame<Size4KiB>) {
+    let _guard = PMM_LOCK.lock();
     unsafe {
         let page = (frame.start_address().as_u64() / PAGE_SIZE as u64) as usize;
         if page >= BITMAP_WORDS * 64 {
@@ -177,8 +169,50 @@ pub fn deallocate_frame(frame: PhysFrame<Size4KiB>) {
         if *BITMAP.add(word) & bit == 0 {
             *BITMAP.add(word) |= bit;
             FREE_PAGES += 1;
+            if page < LAST_FREE_PAGE {
+                LAST_FREE_PAGE = page;
+            }
         }
     }
+}
+
+unsafe fn allocate_frame_locked() -> Option<PhysFrame<Size4KiB>> {
+    let total = BITMAP_WORDS * 64;
+    if total == 0 {
+        return None;
+    }
+    let start = LAST_FREE_PAGE.min(total);
+    let first_word = start / 64;
+
+    // Scan from the hint, then wrap once to catch pages freed below it.
+    for pass in 0..2 {
+        let (begin, end) = if pass == 0 {
+            (first_word, BITMAP_WORDS)
+        } else {
+            (0, first_word)
+        };
+        for word in begin..end {
+            let mut bits = *BITMAP.add(word);
+            if pass == 0 && word == first_word {
+                bits &= !((1u64 << (start % 64)) - 1);
+            }
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                let page = word * 64 + bit;
+                let phys = page as u64 * PAGE_SIZE as u64;
+                if phys >= MAPPED_LIMIT {
+                    break;
+                }
+                *BITMAP.add(word) &= !(1u64 << bit);
+                FREE_PAGES -= 1;
+                LAST_FREE_PAGE = page + 1;
+
+                ptr::write_bytes(phys_to_virt(phys) as *mut u8, 0, PAGE_SIZE);
+                return Some(PhysFrame::containing_address(PhysAddr::new(phys)));
+            }
+        }
+    }
+    None
 }
 
 /// Zero-sized adapter so `x86_64`'s paging `Mapper` can pull frames from the bitmap PMM.

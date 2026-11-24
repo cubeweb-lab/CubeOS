@@ -1,9 +1,12 @@
+// NovumOS port: kernel frame mapping adapted from the paging helpers in
+// NovumOS zig/kernel/memory.zig. Copyright 2025-2026 MinecAnton209.
+// Apache-2.0; see NOTICE for provenance.
 use crate::memory::{self, PHYS_MAP_BASE};
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::page_table::PageTableEntry;
 use x86_64::structures::paging::{
-    Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate,
+    Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
 };
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -45,38 +48,36 @@ pub fn init() {
     KERNEL_PML4.store(frame.start_address().as_u64(), Ordering::Relaxed);
 }
 
-/// Maps `pages` freshly allocated 4 KiB frames at `virt_base` in the kernel
-/// address space. The kernel heap uses this instead of a static array: user
-/// address spaces only identity-map the first 2 MiB of the kernel, while the
-/// higher half is shared verbatim.
-pub fn map_kernel_region(virt_base: u64, pages: usize) -> bool {
+/// Maps one physical frame at a kernel virtual address. The caller owns the
+/// frame and must free it if this returns false.
+pub fn map_kernel_frame(virt: u64, phys: u64) -> bool {
+    if virt < USER_LIMIT
+        || virt % memory::PAGE_SIZE as u64 != 0
+        || phys % memory::PAGE_SIZE as u64 != 0
+    {
+        return false;
+    }
+
     let pml4 = kernel_pml4();
     let mut mapper = unsafe {
         OffsetPageTable::new(&mut *table_ptr(pml4), VirtAddr::new(PHYS_MAP_BASE))
     };
-    for i in 0..pages {
-        let Some(frame) = memory::allocate_frame() else {
-            return false;
-        };
-        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(
-            virt_base + i as u64 * memory::PAGE_SIZE as u64,
-        ));
-        match unsafe {
-            mapper.map_to(
-                page,
-                frame,
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                &mut memory::BitmapFrameAllocator,
-            )
-        } {
-            Ok(flush) => flush.flush(),
-            Err(_) => {
-                memory::deallocate_frame(frame);
-                return false;
-            }
+    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(virt));
+    let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(phys));
+    match unsafe {
+        mapper.map_to(
+            page,
+            frame,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            &mut memory::BitmapFrameAllocator,
+        )
+    } {
+        Ok(flush) => {
+            flush.flush();
+            true
         }
+        Err(_) => false,
     }
-    true
 }
 
 /// Maps an existing physical range into the user half of `cr3`. The frames are

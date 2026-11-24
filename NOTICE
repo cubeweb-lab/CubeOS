@@ -17,6 +17,7 @@ Ported files (originally in NovumOS, zig/drivers/fat*, zig/kernel/str.zig):
 
 These files keep the Apache License, Version 2.0 (see the copyright header in each file).
 Their logic is unchanged; only the CubeOS-specific imports were redirected to the shims below.
+A copy of the Apache License, Version 2.0 is included in LICENSE-APACHE.
 
 The following files were written for CubeOS to replace NovumOS-specific dependencies.
 They are part of CubeOS and follow the project license (GPL-3.0):
@@ -27,5 +28,16 @@ They are part of CubeOS and follow the project license (GPL-3.0):
   zig/src/commands/common.zig  (console output helpers)
   zig/src/config.zig           (FAT build options)
   zig/src/root.zig             (C ABI exports for the Rust kernel)
+  zig/src/fat_test.zig         (host tests for the FAT driver)
   zig/build.zig                (freestanding x86_64 object build)
+  zig/build.zig.zon            (Zig package manifest)
   src/cube_core/zigfs.rs       (Rust side of the bridge)
+
+Memory allocator, paging, and locking ports (originally in NovumOS zig/kernel/memory.zig):
+
+  src/cube_core/heap.rs        (segregated-bin heap allocator)
+  src/cube_core/memory.rs      (physical page bitmap and free-page accounting)
+  src/cube_core/vmm.rs         (kernel frame mapping helpers)
+  src/cube_core/sync.rs        (interrupt-safe IrqLock)
+
+Copyright 2025-2026 MinecAnton209. The original NovumOS code is licensed under the Apache License, Version 2.0. These Rust ports keep the Apache-2.0 terms for the ported portions and are integrated into CubeOS, which is distributed under GPL-3.0. A copy of the Apache License, Version 2.0 is included in LICENSE-APACHE.
