@@ -17,6 +17,7 @@ CSH         := target/apps/$(TARGET)/release/csh
 SPARKD      := target/apps/$(TARGET)/release/sparkd
 GFXDEMO     := target/apps/$(TARGET)/release/gfxdemo
 KERNEL_LIB  := target/$(TARGET)/release/libcube_core.a
+DEMO_DRV    := target/apps/$(TARGET)/release/demo_drv.drv
 ZIG_OBJ     := zig/zig-out/lib/cube_zig.o
 INFO_IN     := info/*
 
@@ -35,7 +36,7 @@ INFO_OUT      := ::/system/info/
 
 QEMU_FLAGS  := -m 256M -serial stdio -no-reboot -no-shutdown
 
-.PHONY: all kernel csh sparkd gfxdemo iso hdd hdd-grub test run run-hdd clean FORCE
+.PHONY: all kernel csh sparkd gfxdemo demo-drv iso hdd hdd-grub test run run-hdd clean FORCE
 
 all: kernel csh
 
@@ -45,19 +46,20 @@ csh: $(CSH)
 
 sparkd: $(SPARKD)
 
-gfxdemo: $(GFXDEMO)
+demo-drv: $(DEMO_DRV)
 
 iso: $(ISO)
 
-hdd: $(HDD) $(KERNEL) $(CSH) $(SPARKD) $(GFXDEMO) config/boot.cfg
+hdd: $(HDD) $(KERNEL) $(CSH) $(SPARKD) $(GFXDEMO) $(DEMO_DRV) config/boot.cfg config/startup.cfg
 	rm -rf $(SYSTEM_STAGE)
-	mkdir -p $(SYSTEM_STAGE)/system/kernel $(SYSTEM_STAGE)/system/config $(SYSTEM_STAGE)/system/info $(SYSTEM_STAGE)/bin $(SYSTEM_STAGE)/home $(SYSTEM_STAGE)/tmp $(SYSTEM_STAGE)/etc
+	mkdir -p $(SYSTEM_STAGE)/system/kernel $(SYSTEM_STAGE)/system/config $(SYSTEM_STAGE)/system/info $(SYSTEM_STAGE)/system/drivers $(SYSTEM_STAGE)/bin $(SYSTEM_STAGE)/home $(SYSTEM_STAGE)/tmp $(SYSTEM_STAGE)/etc
 	cp $(KERNEL) $(SYSTEM_STAGE)/system/kernel/cubecore_1-0-0-dev.elf
 	cp $(CSH) $(SYSTEM_STAGE)/bin/csh
 	cp $(SPARKD) $(SYSTEM_STAGE)/bin/sparkd
 	cp $(GFXDEMO) $(SYSTEM_STAGE)/bin/gfxdemo
 	cp config/boot.cfg $(SYSTEM_STAGE)/system/config/boot.cfg
-	cp $(INFO_IN) $(SYSTEM_STAGE)/system/info/
+	cp config/startup.cfg $(SYSTEM_STAGE)/system/config/startup.cfg
+	cp $(DEMO_DRV) $(SYSTEM_STAGE)/system/drivers/demo.drv
 	truncate -s $(SYSTEM_BYTES) $(SYSTEM_IMG)
 	mke2fs -q -F -t ext4 -b 4096 -L CUBEOS -d $(SYSTEM_STAGE) $(SYSTEM_IMG)
 	dd if=$(SYSTEM_IMG) of=$(HDD) bs=512 seek=$(SYSTEM_START) conv=notrunc status=none
@@ -128,3 +130,8 @@ run-hdd: hdd
 
 clean:
 	rm -rf $(BUILD) target $(KERNEL) $(ISO) $(HDD) zig/zig-out zig/.zig-cache
+$(DEMO_DRV): FORCE
+	cd src/apps/demo_drv && RUSTFLAGS="-C link-arg=-Tlinker.ld -C relocation-model=static -C code-model=large" \
+		$(CARGO) build -Z build-std=core,compiler_builtins \
+		--target $(TARGET) --release --target-dir ../../../target/apps
+	cp target/apps/$(TARGET)/release/demo_drv $@

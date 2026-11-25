@@ -23,6 +23,8 @@ mod zigfs;
 mod checks;
 mod elf;
 mod loader;
+mod drv_meta;
+mod driver;
 mod tss;
 mod ring3;
 mod syscall;
@@ -285,7 +287,7 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
     if ata.exists {
         log_both("OK", "ATA controller detected");
 
-        if fs.mount_label(&ata, b"CUBEOS") {
+        if fs.mount_root(&ata) {
             log_both("OK", "Root volume mounted");
 
             // 18. Write CPU-model and uptime to /system/info

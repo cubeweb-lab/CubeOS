@@ -122,3 +122,38 @@ pub fn rename(old: &[u8], new: &[u8]) -> isize {
     let total = old.len() + 1 + new.len();
     syscall2(SYS_RENAME, buf.as_ptr() as usize, total) as isize
 }
+pub fn load_driver(path: &[u8]) -> isize {
+    syscall2(SYS_LOAD_DRIVER, path.as_ptr() as usize, path.len()) as isize
+}
+
+pub fn driver_count() -> usize {
+    syscall0(SYS_DRIVER_COUNT)
+}
+
+pub fn driver_info(index: usize, info: &mut DriverInfo) -> isize {
+    syscall3(
+        SYS_DRIVER_INFO,
+        index,
+        info as *mut DriverInfo as usize,
+        core::mem::size_of::<DriverInfo>(),
+    ) as isize
+}
+/// Packs NUL-separated arguments and starts a new user task.
+pub fn exec(args: &[&[u8]]) -> isize {
+    let mut buf = [0u8; 512];
+    let mut pos = 0;
+    for arg in args {
+        if pos + arg.len() + 1 > buf.len() {
+            return -1;
+        }
+        buf[pos..pos + arg.len()].copy_from_slice(arg);
+        pos += arg.len();
+        buf[pos] = 0;
+        pos += 1;
+    }
+    if pos < buf.len() {
+        buf[pos] = 0;
+        pos += 1;
+    }
+    syscall2(SYS_EXEC, buf.as_ptr() as usize, pos) as isize
+}

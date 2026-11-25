@@ -66,6 +66,12 @@ for y in 0..200 {
 
 `src/apps/gfxdemo` is a complete freestanding ELF example. Build it with `make gfxdemo`; `make hdd` also copies it to `/bin/gfxdemo`. To launch it at boot, set `cmdline="/bin/gfxdemo"` in `config/boot.cfg`, or use the same path with the `SYS_EXEC` syscall.
 
+## SparkD and drivers
+
+`config/boot.cfg` launches `/bin/sparkd` by default. SparkD scans `/system/drivers/*.drv`, loads each module through `SYS_LOAD_DRIVER`, then starts the programs listed in `/system/config/startup.cfg` (`program /path/to/binary`). With no startup config it launches `/bin/csh`.
+
+A `.drv` module is a static ELF executable with a `.drvmeta` section carrying the `CUBEDRV\0` signature, metadata version, ABI version, flags, and a NUL-terminated name. Modules run as user-mode utility tasks; kernel-mode modules are rejected. `src/apps/demo_drv` is a minimal example, built and staged as `/system/drivers/demo.drv` by `make hdd`. See [docs/syscalls.md](docs/syscalls.md) for the syscall ABI.
+
 ## Syscall reference
 
 The complete syscall ABI, including register conventions, error values, file descriptor limits, directory record layout, open flags, and framebuffer structures, is documented in [docs/syscalls.md](docs/syscalls.md).

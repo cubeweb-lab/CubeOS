@@ -188,8 +188,7 @@ fn open_inode(ext4: &Ext4, path: &str) -> Option<u32> {
     }
     let mut parent = ROOT_INODE;
     let mut name_off = 0;
-    ext4.generic_open(path, &mut parent, false, 0, &mut name_off)
-        .ok()
+    ext4.generic_open(path, &mut parent, false, 0, &mut name_off).ok()
 }
 
 fn split_parent(path: &str) -> (&str, &str) {

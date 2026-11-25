@@ -33,37 +33,38 @@ impl FSManager {
         Self
     }
 
-    /// Mounts the volume whose label matches `label` (case-insensitive,
-    /// trailing padding ignored). ext4 is preferred over FAT so an image can
-    /// carry both without changing the root selection.
-    pub fn mount_label(&mut self, ata: &AtaDrive, label: &[u8]) -> bool {
-        if let Some(lba) = find_ext4_by_label(ata, label) {
-            serial::send_string("[FS] trying ext4 root\n");
-            if ext4fs::mount(lba) {
-                unsafe { KIND = Kind::Ext4 };
-                serial::send_string("[FS] ext4 root volume mounted\n");
+    /// Selects the root volume by probing every filesystem in the MBR for
+    /// `/system/config/boot.cfg`. No label or partition type is required.
+    pub fn mount_root(&mut self, ata: &AtaDrive) -> bool {
+        let Some(candidates) = candidates(ata) else {
+            serial::send_string("[FS] no readable MBR\n");
+            return false;
+        };
+        let mut probe = [0u8; 64];
+        for candidate in candidates.iter().take_while(|c| c.kind != Kind::None) {
+            let mounted = match candidate.kind {
+                Kind::Ext4 => ext4fs::mount(candidate.lba),
+                Kind::Fat => zigfs::mount(candidate.lba).is_some(),
+                Kind::None => false,
+            };
+            if !mounted {
+                continue;
+            }
+            unsafe { KIND = candidate.kind };
+            if read(0, b"/system/config/boot.cfg", 0, &mut probe).is_some() {
+                serial::send_string("[FS] root volume selected: ");
+                serial::send_string(match candidate.kind {
+                    Kind::Ext4 => "ext4",
+                    Kind::Fat => "FAT",
+                    Kind::None => "none",
+                });
+                serial::send_string("\n");
                 return true;
             }
-            serial::send_string("[FS] ext4 mount failed, falling back to FAT\n");
         }
-
-        let lba = match find_fat_by_label(ata, label) {
-            Some(lba) => lba,
-            None => {
-                serial::send_string("[FS] No volume with the requested label\n");
-                return false;
-            }
-        };
-        match zigfs::mount(lba) {
-            Some(fs_kind) => {
-                unsafe { KIND = Kind::Fat };
-                serial::send_string("[FS] ");
-                serial::send_string(fs_kind);
-                serial::send_string(" root volume mounted\n");
-                true
-            }
-            None => false,
-        }
+        unsafe { KIND = Kind::None };
+        serial::send_string("[FS] no volume contains /system/config/boot.cfg\n");
+        false
     }
 
     /// Reads a whole file given by an absolute path such as "/SYSTEM/CONFIG/BOOT.CFG".
@@ -151,56 +152,43 @@ pub fn rmdir(start_dir: u32, path: &[u8], recursive: bool) -> bool {
     }
 }
 
-/// Scans MBR entries for a FAT volume carrying `label`.
-fn find_fat_by_label(ata: &AtaDrive, label: &[u8]) -> Option<u32> {
-    let partitions = read_partitions(ata)?;
-    for part in partitions {
-        if !FAT_PARTITION_TYPES.contains(&part.part_type) || part.start_lba == 0 {
-            continue;
-        }
-        let mut boot = [0u8; 512];
-        if !ata.read_sector(part.start_lba, &mut boot) {
-            continue;
-        }
-        if boot[510] != 0x55 || boot[511] != 0xAA {
-            continue;
-        }
-        if scan::fat_label(&boot).is_some_and(|raw| scan::label_eq(&raw, label)) {
-            return Some(part.start_lba);
-        }
-    }
-    None
+#[derive(Clone, Copy)]
+struct Candidate {
+    lba: u32,
+    kind: Kind,
 }
 
-/// Scans MBR entries for an ext4 volume carrying `label`. Any partition with
-/// a valid superblock is a fallback: the root is selected by filesystem, not
-/// by the MBR type byte, so a GRUB-installed image with a nonstandard type
-/// still boots.
-fn find_ext4_by_label(ata: &AtaDrive, label: &[u8]) -> Option<u32> {
+/// Collects every mountable volume from the MBR, ext4 first, FAT second.
+fn candidates(ata: &AtaDrive) -> Option<[Candidate; scan::MBR_PARTITION_ENTRIES]> {
     let partitions = read_partitions(ata)?;
-    let mut fallback = None;
+    let mut out = [Candidate { lba: 0, kind: Kind::None }; scan::MBR_PARTITION_ENTRIES];
+    let mut count = 0;
     for part in partitions {
-        if part.start_lba == 0 {
+        if part.start_lba == 0 || count == out.len() {
             continue;
         }
-        let Some(sector) = part.start_lba.checked_add(2) else {
+        let Some(sb_lba) = part.start_lba.checked_add(2) else {
             continue;
         };
-        let mut superblock = [0u8; 512];
-        if !ata.read_sector(sector, &mut superblock) {
+        let mut sector = [0u8; 512];
+        if ata.read_sector(sb_lba, &mut sector) && scan::ext4_label(&sector).is_some() {
+            out[count] = Candidate { lba: part.start_lba, kind: Kind::Ext4 };
+            count += 1;
             continue;
         }
-        let Some(raw) = scan::ext4_label(&superblock) else {
+        if !FAT_PARTITION_TYPES.contains(&part.part_type) {
             continue;
-        };
-        if fallback.is_none() {
-            fallback = Some(part.start_lba);
         }
-        if scan::label_eq(&raw, label) {
-            return Some(part.start_lba);
+        if ata.read_sector(part.start_lba, &mut sector)
+            && sector[510] == 0x55
+            && sector[511] == 0xAA
+            && scan::fat_label(&sector).is_some()
+        {
+            out[count] = Candidate { lba: part.start_lba, kind: Kind::Fat };
+            count += 1;
         }
     }
-    fallback
+    Some(out)
 }
 
 fn read_partitions(ata: &AtaDrive) -> Option<[scan::Partition; scan::MBR_PARTITION_ENTRIES]> {

@@ -1,6 +1,6 @@
 // src/cube_core/syscall.rs
 use core::arch::asm;
-use crate::fs::{self, DirItem, EMPTY_ITEM};
+use crate::fs::{self, DirItem, FSManager, EMPTY_ITEM};
 
 const IA32_EFER:  u32 = 0xC0000080;
 const IA32_STAR:  u32 = 0xC0000081;
@@ -23,6 +23,9 @@ pub const SYS_DEBUG:    u64 = 78;
 pub const SYS_EXEC:     u64 = 99;
 pub const SYS_FB_INFO:  u64 = 100;
 pub const SYS_FB_MAP:   u64 = 101;
+pub const SYS_LOAD_DRIVER: u64 = 102;
+pub const SYS_DRIVER_COUNT: u64 = 103;
+pub const SYS_DRIVER_INFO: u64 = 104;
 
 // open() flags
 const O_WRONLY:    u64 = 0o1;
@@ -645,39 +648,26 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             }
 
             let path = match core::str::from_utf8(&path_buf[..len]) {
-                Ok(s) => s.trim_end_matches("\\0"),
+                Ok(s) => s.trim_end_matches('\0'),
                 Err(_) => return u64::MAX,
             };
 
-            // Буфер для программы — локальный, не static mut
-            const MAX_PROGRAM_SIZE: usize = 65536;
-            let mut program_buf = [0u8; MAX_PROGRAM_SIZE];
-
-            // Читаем файл через zigfs
-            const START_DIR: u32 = 0; // корень
-            let size = match crate::fs::read(START_DIR, path.as_bytes(), 0, &mut program_buf) {
+            let program_buf = unsafe { &mut crate::loader::PROGRAM_BUF.0 };
+            const START_DIR: u32 = 0;
+            let size = match crate::fs::read(START_DIR, path.as_bytes(), 0, program_buf) {
                 Some(n) => n,
-                None => {
-                    crate::serial::send_string("[SYSCALL] EXEC: file not found or read error: ");
-                    crate::serial::send_string(path);
-                    crate::serial::send_string("\\n");
-                    return u64::MAX;
-                }
+                None => return u64::MAX,
             };
-
-            // Проверка ELF-магии
-            if size < 4 || program_buf[0..4] != *b"\\x7fELF" {
-                crate::serial::send_string("[SYSCALL] EXEC: invalid ELF: ");
-                crate::serial::send_string(path);
-                crate::serial::send_string("\\n");
+            if size < 4 || program_buf[0..4] != [0x7F, b'E', b'L', b'F'] {
                 return u64::MAX;
             }
+
 
             // Создаём новое адресное пространство
             let mut aspace = match crate::vmm::AddressSpace::new() {
                 Some(a) => a,
                 None => {
-                    crate::serial::send_string("[SYSCALL] EXEC: failed to create AddressSpace\\n");
+                    crate::serial::send_string("[SYSCALL] EXEC: failed to create AddressSpace\n");
                     return u64::MAX;
                 }
             };
@@ -704,7 +694,7 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                         }
                     }
                     crate::serial::send_string(core::str::from_utf8(&temp[i+1..]).unwrap_or("?"));
-                    crate::serial::send_string("\\n");
+                    crate::serial::send_string("\n");
 
                     pid as u64
                 }
@@ -714,6 +704,41 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                     u64::MAX
                 }
             }
+        }
+        SYS_LOAD_DRIVER => {
+            if a1 == 0 || a2 == 0 || a2 > 512 {
+                return u64::MAX;
+            }
+            let mut path_buf = [0u8; 512];
+            let len = match unsafe { copy_user_str(a1, a2, &mut path_buf) } {
+                Some(len) => len,
+                None => return u64::MAX,
+            };
+            if path_buf[..len].iter().all(|&b| b != 0) {
+                return u64::MAX;
+            }
+            let path = match core::str::from_utf8(&path_buf[..len]) {
+                Ok(s) => s.trim_end_matches('\0'),
+                Err(_) => return u64::MAX,
+            };
+            match crate::driver::load(&FSManager::new(), path) {
+                Some(pid) => pid,
+                None => u64::MAX,
+            }
+        }
+        SYS_DRIVER_COUNT => crate::driver::count() as u64,
+        SYS_DRIVER_INFO => {
+            if !user_range_ok(a2, crate::driver::DRIVER_INFO_SIZE) {
+                return u64::MAX;
+            }
+            let mut info = [0u8; crate::driver::DRIVER_INFO_SIZE];
+            if !crate::driver::info(a1 as usize, &mut info) {
+                return u64::MAX;
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(info.as_ptr(), a2 as *mut u8, info.len());
+            }
+            0
         }
         _ => {
             crate::serial::send_string("[SYSCALL] unknown num=");

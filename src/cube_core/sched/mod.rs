@@ -84,15 +84,12 @@ pub fn spawn_user(
     user_rip: u64,
     user_rsp: u64,
     kernel_stack_base: u64,
+    stack_pages: usize,
     qos: Qos,
     name: &[u8],
 ) -> Option<u64> {
     unsafe {
-        // Для naked trampoline
-        USER_RSP_GLOBAL = user_rsp;
-        USER_RIP_GLOBAL = user_rip;
-
-        let stack_top = kernel_stack_base + 4096;
+        let stack_top = kernel_stack_base + (stack_pages as u64) * 4096;
         let mut sp = stack_top;
 
         sp -= 8; *(sp as *mut u64) = 0;
@@ -109,7 +106,7 @@ pub fn spawn_user(
         t.priority = qos.base_priority();
         t.quantum = qos.quantum_ticks();
         t.stack_base = kernel_stack_base;
-        t.stack_pages = 1;
+        t.stack_pages = stack_pages;
         t.cr3 = cr3;
         t.user_rsp = user_rsp;
         t.user_rip = user_rip;
@@ -185,9 +182,12 @@ pub fn tick() {
         CURRENT.store(next, Ordering::Relaxed);
 
         if RQ.tasks[next].is_user() {
-            let kernel_top = RQ.tasks[next].stack_base + (RQ.tasks[next].stack_pages as u64) * 4096;
+            let task = &RQ.tasks[next];
+            let kernel_top = task.stack_base + (task.stack_pages as u64) * 4096;
             crate::tss::set_rsp0(kernel_top);
             crate::syscall::set_kernel_rsp(kernel_top);
+            USER_RSP_GLOBAL = task.user_rsp;
+            USER_RIP_GLOBAL = task.user_rip;
         }
 
         context::context_switch(

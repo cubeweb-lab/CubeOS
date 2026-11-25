@@ -7,11 +7,11 @@ use crate::sched::{self, Qos};
 pub const MAX_PROGRAM_SIZE: usize = 65536;
 
 #[repr(C, align(4096))]
-struct ProgramBuf([u8; MAX_PROGRAM_SIZE]);
+pub struct ProgramBuf(pub [u8; MAX_PROGRAM_SIZE]);
 
 #[link_section = ".program_buf"]
 pub static mut PROGRAM_BUF: ProgramBuf = ProgramBuf([0; MAX_PROGRAM_SIZE]);
-
+const KERNEL_STACK_PAGES: usize = 16;
 const USER_STACK_TOP: u64 = USER_LIMIT - 0x10000;   // 0x7FFF_FFFF_0000
 const USER_STACK_PAGES: u64 = 4;
 
@@ -61,8 +61,31 @@ pub(crate) fn spawn_program(aspace: &mut AddressSpace, image: &[u8], path: &str,
     }
     crate::serial::send_string("[LOADER] User stack mapped\n");
 
-    let kernel_stack = crate::memory::allocate_frame()?;
-    let kernel_stack_base = crate::memory::phys_to_virt(kernel_stack.start_address().as_u64());
+    let mut frames = [None; KERNEL_STACK_PAGES];
+    let mut base = 0u64;
+    for (index, slot) in frames.iter_mut().enumerate() {
+        let frame = match crate::memory::allocate_frame() {
+            Some(frame) => frame,
+            None => {
+                for taken in frames.iter().flatten() {
+                    crate::memory::deallocate_frame(*taken);
+                }
+                return None;
+            }
+        };
+        let addr = frame.start_address().as_u64();
+        if index == 0 {
+            base = addr;
+        } else if addr != base + (index as u64) * 4096 {
+            crate::memory::deallocate_frame(frame);
+            for taken in frames.iter().flatten() {
+                crate::memory::deallocate_frame(*taken);
+            }
+            return None;
+        }
+        *slot = Some(frame);
+    }
+    let kernel_stack_base = crate::memory::phys_to_virt(base);
 
     let name = path.rsplit('/').next().unwrap_or("user");
     let pid = sched::spawn_user(
@@ -70,11 +93,14 @@ pub(crate) fn spawn_program(aspace: &mut AddressSpace, image: &[u8], path: &str,
         program.entry_point,
         USER_STACK_TOP - 16,
         kernel_stack_base,
+        KERNEL_STACK_PAGES,
         qos,
         name.as_bytes(),
     );
     if pid.is_none() {
-        crate::memory::deallocate_frame(kernel_stack);
+        for frame in frames.iter().flatten() {
+            crate::memory::deallocate_frame(*frame);
+        }
     }
     pid
 }

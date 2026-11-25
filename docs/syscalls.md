@@ -43,6 +43,9 @@ Buffers passed to the kernel must be in user address space. The kernel validates
 | 99 | `SYS_EXEC` | `path`, `path_len` | New PID |
 | 100 | `SYS_FB_INFO` | `out`, `out_len` | `0` |
 | 101 | `SYS_FB_MAP` | None | User VA |
+| 102 | `SYS_LOAD_DRIVER` | `path`, `path_len` | New PID |
+| 103 | `SYS_DRIVER_COUNT` | None | Loaded driver count |
+| 104 | `SYS_DRIVER_INFO` | `index`, `out`, `out_len` | `0` |
 
 Unknown syscall numbers are logged to the serial console as `[SYSCALL] unknown num=N` and return `0`.
 
@@ -234,6 +237,21 @@ let addr = sys::syscall0(SYS_FB_MAP);
 Maps the physical linear framebuffer into the calling process's address space at the fixed user address `0x0000_6000_0000_0000`. The mapping is cached: repeated calls return the same address. Returns the user virtual address on success or `u64::MAX` if no framebuffer is available.
 
 The framebuffer frames belong to the firmware. Process teardown removes the user mappings but does not return those frames to the physical memory manager.
+
+## `SYS_LOAD_DRIVER` (102), `SYS_DRIVER_COUNT` (103), `SYS_DRIVER_INFO` (104)
+
+```rust
+let pid = sys::load_driver(b"/system/drivers/demo.drv\0");
+let count = sys::driver_count();
+let mut info = sys::DriverInfo { name: [0; 32], pid: 0, abi: 0, flags: 0 };
+let ok = sys::driver_info(0, &mut info);
+```
+
+`SYS_LOAD_DRIVER` reads a `.drv` file, validates its ELF `.drvmeta` section, and starts the module as a user-mode utility task. The path buffer must be NUL-terminated and no longer than 512 bytes. On success it returns the new PID; on failure, `u64::MAX`. Kernel-mode modules (`DRV_FLAG_KERNEL`) are rejected.
+
+The `.drvmeta` section is a 128-byte `repr(C)` record: `magic` (`"CUBEDRV\0"`), `version` (1), `abi` (1), `flags`, a 32-byte NUL-terminated name, a 64-byte description, and 12 reserved bytes. The driver ELF is an ordinary static executable linked at `0x400000` with `_start` as its entry point.
+
+`SYS_DRIVER_COUNT` returns the number of registered drivers. `SYS_DRIVER_INFO` writes a 48-byte record (`name[32]`, `pid: u64`, `abi: u32`, `flags: u32`, little-endian) into the supplied buffer and returns `0`, or `u64::MAX` when the index is invalid. `SparkD` uses these calls to report loaded modules at boot.
 
 ## Not implemented
 
