@@ -14,6 +14,7 @@ use crate::zigfs::{DirItem, Resolved, Stat};
 
 const ROOT_INODE: u32 = 2;
 const MAX_PATH: usize = 255;
+const SUPERBLOCK_MAGIC: u16 = 0xEF53;
 
 static mut FS: Option<Ext4> = None;
 static LOCK: SpinLock = SpinLock::new();
@@ -100,9 +101,16 @@ fn with_fs<R>(f: impl FnOnce(&Ext4) -> R) -> Option<R> {
 }
 
 pub fn mount(base_lba: u32) -> bool {
-    // TODO: validate the superblock and return false when Ext4::open fails;
-    // this function currently reports success unconditionally.
-    let fs = Ext4::open(Arc::new(AtaBlockDevice { base_lba }));
+    let device = Arc::new(AtaBlockDevice { base_lba });
+    let superblock = device.read_offset(1024);
+    if superblock.len() < 0x88 {
+        return false;
+    }
+    let magic = u16::from_le_bytes([superblock[0x38], superblock[0x39]]);
+    if magic != SUPERBLOCK_MAGIC {
+        return false;
+    }
+    let fs = Ext4::open(device);
     LOCK.lock();
     unsafe { FS = Some(fs) };
     LOCK.unlock();

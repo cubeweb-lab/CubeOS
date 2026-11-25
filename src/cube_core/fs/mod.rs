@@ -5,14 +5,12 @@ use crate::ata::AtaDrive;
 use crate::serial;
 use crate::{ext4fs, zigfs};
 
+mod scan;
+
 pub use crate::zigfs::{DirItem, Resolved, Stat, EMPTY_ITEM};
 
 // MBR partition types of FAT12, FAT16 (<32 MB, >32 MB) and FAT32 (CHS and LBA)
 const FAT_PARTITION_TYPES: [u8; 6] = [0x01, 0x04, 0x06, 0x0B, 0x0C, 0x0E];
-const EXT4_PARTITION_TYPE: u8 = 0x83;
-const MBR_PARTITION_OFFSET: usize = 446;
-const MBR_PARTITION_ENTRIES: usize = 4;
-const EXT4_SUPERBLOCK_MAGIC: u16 = 0xEF53;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Kind {
@@ -40,11 +38,13 @@ impl FSManager {
     /// carry both without changing the root selection.
     pub fn mount_label(&mut self, ata: &AtaDrive, label: &[u8]) -> bool {
         if let Some(lba) = find_ext4_by_label(ata, label) {
+            serial::send_string("[FS] trying ext4 root\n");
             if ext4fs::mount(lba) {
                 unsafe { KIND = Kind::Ext4 };
                 serial::send_string("[FS] ext4 root volume mounted\n");
                 return true;
             }
+            serial::send_string("[FS] ext4 mount failed, falling back to FAT\n");
         }
 
         let lba = match find_fat_by_label(ata, label) {
@@ -151,106 +151,62 @@ pub fn rmdir(start_dir: u32, path: &[u8], recursive: bool) -> bool {
     }
 }
 
-/// Scans the four primary MBR entries for a FAT volume carrying `label`.
+/// Scans MBR entries for a FAT volume carrying `label`.
 fn find_fat_by_label(ata: &AtaDrive, label: &[u8]) -> Option<u32> {
-    for (part_type, start_lba) in mbr_partitions(ata) {
-        if !FAT_PARTITION_TYPES.contains(&part_type) || start_lba == 0 {
+    let partitions = read_partitions(ata)?;
+    for part in partitions {
+        if !FAT_PARTITION_TYPES.contains(&part.part_type) || part.start_lba == 0 {
             continue;
         }
-        if fat_label_matches(ata, start_lba, label) {
-            return Some(start_lba);
+        let mut boot = [0u8; 512];
+        if !ata.read_sector(part.start_lba, &mut boot) {
+            continue;
+        }
+        if boot[510] != 0x55 || boot[511] != 0xAA {
+            continue;
+        }
+        if scan::fat_label(&boot).is_some_and(|raw| scan::label_eq(&raw, label)) {
+            return Some(part.start_lba);
         }
     }
     None
 }
 
-/// Scans the four primary MBR entries for an ext4 volume carrying `label`.
+/// Scans MBR entries for an ext4 volume carrying `label`. Any partition with
+/// a valid superblock is a fallback: the root is selected by filesystem, not
+/// by the MBR type byte, so a GRUB-installed image with a nonstandard type
+/// still boots.
 fn find_ext4_by_label(ata: &AtaDrive, label: &[u8]) -> Option<u32> {
-    for (part_type, start_lba) in mbr_partitions(ata) {
-        if part_type != EXT4_PARTITION_TYPE || start_lba == 0 {
+    let partitions = read_partitions(ata)?;
+    let mut fallback = None;
+    for part in partitions {
+        if part.start_lba == 0 {
             continue;
         }
-        if ext4_label_matches(ata, start_lba, label) {
-            return Some(start_lba);
+        let Some(sector) = part.start_lba.checked_add(2) else {
+            continue;
+        };
+        let mut superblock = [0u8; 512];
+        if !ata.read_sector(sector, &mut superblock) {
+            continue;
+        }
+        let Some(raw) = scan::ext4_label(&superblock) else {
+            continue;
+        };
+        if fallback.is_none() {
+            fallback = Some(part.start_lba);
+        }
+        if scan::label_eq(&raw, label) {
+            return Some(part.start_lba);
         }
     }
-    None
+    fallback
 }
 
-fn mbr_partitions(ata: &AtaDrive) -> impl Iterator<Item = (u8, u32)> {
-    let mut entries = [(0u8, 0u32); MBR_PARTITION_ENTRIES];
+fn read_partitions(ata: &AtaDrive) -> Option<[scan::Partition; scan::MBR_PARTITION_ENTRIES]> {
     let mut mbr = [0u8; 512];
     if !ata.read_sector(0, &mut mbr) || mbr[510] != 0x55 || mbr[511] != 0xAA {
-        return entries.into_iter();
-    }
-    for (index, slot) in entries.iter_mut().enumerate() {
-        let offset = MBR_PARTITION_OFFSET + index * 16;
-        *slot = (
-            mbr[offset + 4],
-            u32::from_le_bytes([
-                mbr[offset + 8],
-                mbr[offset + 9],
-                mbr[offset + 10],
-                mbr[offset + 11],
-            ]),
-        );
-    }
-    entries.into_iter()
-}
-
-fn fat_label_matches(ata: &AtaDrive, start_lba: u32, label: &[u8]) -> bool {
-    let mut boot = [0u8; 512];
-    if !ata.read_sector(start_lba, &mut boot) {
-        return false;
-    }
-    if boot[510] != 0x55 || boot[511] != 0xAA {
-        return false;
-    }
-    match volume_label(&boot) {
-        Some(raw) => label_eq(&raw, label),
-        None => false,
-    }
-}
-
-fn ext4_label_matches(ata: &AtaDrive, start_lba: u32, label: &[u8]) -> bool {
-    let mut superblock = [0u8; 512];
-    let Some(sector) = start_lba.checked_add(2) else {
-        return false;
-    };
-    if !ata.read_sector(sector, &mut superblock) {
-        return false;
-    }
-    let magic = u16::from_le_bytes([superblock[0x38], superblock[0x39]]);
-    if magic != EXT4_SUPERBLOCK_MAGIC {
-        return false;
-    }
-    label_eq(&superblock[0x78..0x88], label)
-}
-
-/// Reads the 11-byte volume label from the BPB: offset 0x2B for FAT12/16,
-/// 0x47 for FAT32 (where the FAT16 field is zero).
-fn volume_label(boot: &[u8; 512]) -> Option<[u8; 11]> {
-    let bytes_per_sector = u16::from_le_bytes([boot[0x0B], boot[0x0C]]);
-    if bytes_per_sector != 512 {
         return None;
     }
-    let fat16_size = u16::from_le_bytes([boot[0x16], boot[0x17]]);
-    let offset = if fat16_size != 0 { 0x2B } else { 0x47 };
-    let mut out = [0u8; 11];
-    out.copy_from_slice(&boot[offset..offset + 11]);
-    Some(out)
-}
-
-fn label_eq(raw: &[u8], want: &[u8]) -> bool {
-    let raw = trim_padding(raw);
-    let want = trim_padding(want);
-    raw.len() == want.len() && raw.iter().zip(want).all(|(a, b)| a.eq_ignore_ascii_case(b))
-}
-
-fn trim_padding(bytes: &[u8]) -> &[u8] {
-    let mut len = bytes.len();
-    while len > 0 && (bytes[len - 1] == b' ' || bytes[len - 1] == 0) {
-        len -= 1;
-    }
-    &bytes[..len]
+    Some(scan::mbr_partitions(&mbr))
 }
