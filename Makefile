@@ -62,10 +62,11 @@ system-image: $(KERNEL) $(CSH) $(SPARKD) $(GFXDEMO) $(DEMO_DRV) config/boot.cfg 
 	cp config/boot.cfg $(SYSTEM_STAGE)/system/config/boot.cfg
 	cp config/startup.cfg $(SYSTEM_STAGE)/system/config/startup.cfg
 	cp $(DEMO_DRV) $(SYSTEM_STAGE)/system/drivers/demo.drv
-	truncate -s $(SYSTEM_BYTES) $(SYSTEM_IMG)
-	mke2fs -q -F -t ext4 -b 4096 -L CUBEOS -d $(SYSTEM_STAGE) $(SYSTEM_IMG)
 	truncate -s $(shell expr $(RAMDISK_MB) \* 1048576) $(SYSTEM_RAM_IMG)
 	mke2fs -q -F -t ext4 -b 4096 -L CUBEOS -d $(SYSTEM_STAGE) $(SYSTEM_RAM_IMG)
+	cp $(SYSTEM_RAM_IMG) $(SYSTEM_STAGE)/system/kernel/system.img
+	truncate -s $(SYSTEM_BYTES) $(SYSTEM_IMG)
+	mke2fs -q -F -t ext4 -b 4096 -L CUBEOS -d $(SYSTEM_STAGE) $(SYSTEM_IMG)
 
 hdd: $(HDD) system-image
 	dd if=$(SYSTEM_IMG) of=$(HDD) bs=512 seek=$(SYSTEM_START) conv=notrunc status=none

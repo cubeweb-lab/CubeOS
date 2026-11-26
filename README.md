@@ -74,7 +74,20 @@ A `.drv` module is a static ELF executable with a `.drvmeta` section carrying th
 
 ## Booting without an ATA controller
 
-The kernel only has a legacy ATA PIO driver, so an AHCI-only laptop or a USB stick is invisible to it. GRUB therefore loads a small ext4 root image as a Multiboot2 module (`module2 /boot/system.img` in `config/grub.cfg`) and the kernel mounts it as a RAM disk; the boot media itself is never accessed after GRUB hands over. `make iso` builds this image and can be used for USB/CD boot with CSM enabled. The `make hdd` image still uses the ATA path when no module is supplied.
+The kernel only has a legacy ATA PIO driver, so an AHCI-only laptop or a USB stick is invisible to it. GRUB therefore loads an ext4 root image as a Multiboot2 module (`module2 /system/kernel/system.img` in `config/grub-hdd.cfg`, `module2 /boot/system.img` in `config/grub.cfg`) and the kernel mounts it as a RAM disk; the boot media itself is never accessed after GRUB hands over.
+
+To build a bootable USB stick for a real PC, use the raw HDD image (it has an MBR, a FAT32 boot partition and GRUB installed in the MBR):
+
+```bash
+make hdd
+sudo make hdd-grub
+sudo dd if=cubeos.img of=/dev/sdX bs=4M status=progress conv=fsync
+sudo sync
+```
+
+Replace `/dev/sdX` with the USB device (`lsblk`) — this overwrites its partition table. In UEFI, enable CSM/Legacy boot and disable Secure Boot; a UEFI-only boot needs a UEFI loader, which this image does not have. The ISO variant (`make iso`) can be written with Rufus in DD mode if the firmware boots the stick as a CD-ROM.
+
+The `hdd` image also works in QEMU without special flags: `make run-hdd`. With no multiboot module present, root falls back to the ATA path, which is useful for the original disk image workflow.
 
 ## Syscall reference
 
