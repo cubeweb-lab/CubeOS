@@ -36,11 +36,18 @@ impl FSManager {
     /// Selects the root volume by probing every filesystem in the MBR for
     /// `/system/config/boot.cfg`. No label or partition type is required.
     pub fn mount_root(&mut self, ata: &AtaDrive) -> bool {
+        let mut probe = [0u8; 64];
+        if crate::ramdisk::is_present() && ext4fs::mount(0) {
+            unsafe { KIND = Kind::Ext4 };
+            if read(0, b"/system/config/boot.cfg", 0, &mut probe).is_some() {
+                serial::send_string("[FS] root volume selected: RAM ext4\n");
+                return true;
+            }
+        }
         let Some(candidates) = candidates(ata) else {
             serial::send_string("[FS] no readable MBR\n");
             return false;
         };
-        let mut probe = [0u8; 64];
         for candidate in candidates.iter().take_while(|c| c.kind != Kind::None) {
             let mounted = match candidate.kind {
                 Kind::Ext4 => ext4fs::mount(candidate.lba),
