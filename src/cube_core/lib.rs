@@ -30,6 +30,7 @@ mod ring3;
 mod syscall;
 mod sched;
 mod vmm;
+mod ramdisk;
 mod fb;
 mod uptime;
 mod cpuinfo;
@@ -219,6 +220,11 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
     serial::send_string(write_num(&mut buf, memory::free_memory_mb() as usize));
     serial::send_string(" MB)\n");
     serial::log_ok("Physical Memory Manager initialized");
+    if let Some((start, end)) = mb_info.module {
+        if ramdisk::init(start, end) {
+            crate::kprintln!("[INFO ] RAM disk: {} KiB", ramdisk::len() / 1024);
+        }
+    }
 
     vmm::init();
     serial::log_ok("Virtual memory manager initialized");
@@ -284,8 +290,12 @@ pub extern "C" fn rust_main(magic: u32, info_addr: u32) -> ! {
 
     log_both("INFO", "Initializing ATA controller...");
 
-    if ata.exists {
-        log_both("OK", "ATA controller detected");
+    if ata.exists || ramdisk::is_present() {
+        if ramdisk::is_present() {
+            log_both("OK", "Boot module available as RAM disk");
+        } else {
+            log_both("OK", "ATA controller detected");
+        }
 
         if fs.mount_root(&ata) {
             log_both("OK", "Root volume mounted");

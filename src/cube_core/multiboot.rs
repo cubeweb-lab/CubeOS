@@ -29,6 +29,7 @@ pub struct MultibootInfo {
     pub framebuffer: Option<FramebufferInfo>,
     pub memory_map: &'static [MemoryMapEntry],
     pub total_size: u32,
+    pub module: Option<(u32, u32)>,
 }
 
 impl MultibootInfo {
@@ -40,6 +41,7 @@ impl MultibootInfo {
         let mut framebuffer = None;
         let mut mmap_ptr: *const MemoryMapEntry = core::ptr::null();
         let mut mmap_entries: usize = 0;
+        let mut module = None;
 
         while ptr_cur < end {
             let typ = ptr::read(ptr_cur);
@@ -49,6 +51,11 @@ impl MultibootInfo {
             if size < 8 { break; }
 
             match typ {
+                3 => {
+                    if size >= 16 && module.is_none() {
+                        module = Some((ptr::read(ptr_cur.add(2)), ptr::read(ptr_cur.add(3))));
+                    }
+                }
                 8 => {
                     // Framebuffer tag: type(4) + size(4) + framebuffer_data
                     let fb_ptr = ptr_cur.add(2) as *const u8;
@@ -105,6 +112,7 @@ impl MultibootInfo {
             framebuffer,
             memory_map,
             total_size,
+            module,
         }
     }
 

@@ -19,6 +19,20 @@ const SUPERBLOCK_MAGIC: u16 = 0xEF53;
 static mut FS: Option<Ext4> = None;
 static LOCK: SpinLock = SpinLock::new();
 
+struct RamBlockDevice;
+
+impl BlockDevice for RamBlockDevice {
+    fn read_offset(&self, offset: usize) -> Vec<u8> {
+        let mut out = vec![0u8; BLOCK_SIZE];
+        crate::ramdisk::read(offset, &mut out);
+        out
+    }
+
+    fn write_offset(&self, offset: usize, data: &[u8]) {
+        crate::ramdisk::write(offset, data);
+    }
+}
+
 struct AtaBlockDevice {
     base_lba: u32,
 }
@@ -101,7 +115,11 @@ fn with_fs<R>(f: impl FnOnce(&Ext4) -> R) -> Option<R> {
 }
 
 pub fn mount(base_lba: u32) -> bool {
-    let device = Arc::new(AtaBlockDevice { base_lba });
+    let device: Arc<dyn BlockDevice> = if crate::ramdisk::is_present() {
+        Arc::new(RamBlockDevice)
+    } else {
+        Arc::new(AtaBlockDevice { base_lba })
+    };
     let superblock = device.read_offset(1024);
     if superblock.len() < 0x88 {
         return false;

@@ -31,12 +31,14 @@ SYSTEM_SECTORS := $(shell expr $(HDD_SECTORS) - $(SYSTEM_START))
 SYSTEM_BYTES  := $(shell expr $(SYSTEM_SECTORS) \* 512)
 SYSTEM_STAGE  := $(BUILD)/system-root
 SYSTEM_IMG    := $(BUILD)/system.ext4
+SYSTEM_RAM_IMG := $(BUILD)/system-ram.img
+RAMDISK_MB    := 32
 SYSTEM_KERNEL := ::/system/kernel/cubecore_1-0-0-dev.elf
 INFO_OUT      := ::/system/info/
 
 QEMU_FLAGS  := -m 256M -serial stdio -no-reboot -no-shutdown
 
-.PHONY: all kernel csh sparkd gfxdemo demo-drv iso hdd hdd-grub test run run-hdd clean FORCE
+.PHONY: all kernel csh sparkd gfxdemo demo-drv system-image iso hdd hdd-grub test run run-hdd clean FORCE
 
 all: kernel csh
 
@@ -50,7 +52,7 @@ demo-drv: $(DEMO_DRV)
 
 iso: $(ISO)
 
-hdd: $(HDD) $(KERNEL) $(CSH) $(SPARKD) $(GFXDEMO) $(DEMO_DRV) config/boot.cfg config/startup.cfg
+system-image: $(KERNEL) $(CSH) $(SPARKD) $(GFXDEMO) $(DEMO_DRV) config/boot.cfg config/startup.cfg
 	rm -rf $(SYSTEM_STAGE)
 	mkdir -p $(SYSTEM_STAGE)/system/kernel $(SYSTEM_STAGE)/system/config $(SYSTEM_STAGE)/system/info $(SYSTEM_STAGE)/system/drivers $(SYSTEM_STAGE)/bin $(SYSTEM_STAGE)/home $(SYSTEM_STAGE)/tmp $(SYSTEM_STAGE)/etc
 	cp $(KERNEL) $(SYSTEM_STAGE)/system/kernel/cubecore_1-0-0-dev.elf
@@ -62,6 +64,10 @@ hdd: $(HDD) $(KERNEL) $(CSH) $(SPARKD) $(GFXDEMO) $(DEMO_DRV) config/boot.cfg co
 	cp $(DEMO_DRV) $(SYSTEM_STAGE)/system/drivers/demo.drv
 	truncate -s $(SYSTEM_BYTES) $(SYSTEM_IMG)
 	mke2fs -q -F -t ext4 -b 4096 -L CUBEOS -d $(SYSTEM_STAGE) $(SYSTEM_IMG)
+	truncate -s $(shell expr $(RAMDISK_MB) \* 1048576) $(SYSTEM_RAM_IMG)
+	mke2fs -q -F -t ext4 -b 4096 -L CUBEOS -d $(SYSTEM_STAGE) $(SYSTEM_RAM_IMG)
+
+hdd: $(HDD) system-image
 	dd if=$(SYSTEM_IMG) of=$(HDD) bs=512 seek=$(SYSTEM_START) conv=notrunc status=none
 	mcopy -o -i $(HDD)@@$(BOOT_OFFSET) $(KERNEL) ::/kernel.elf
 	@echo "  HDD image updated: $(HDD)"
@@ -112,10 +118,11 @@ $(GFXDEMO): FORCE
 		$(CARGO) build -Z build-std=core,compiler_builtins \
 		--target $(TARGET) --release --target-dir ../../../target/apps
 
-$(ISO): $(KERNEL) config/grub.cfg
+$(ISO): $(KERNEL) system-image config/grub.cfg
 	rm -rf $(BUILD)/iso
 	mkdir -p $(BUILD)/iso/boot/grub
 	cp $(KERNEL) $(BUILD)/iso/boot/kernel.elf
+	cp $(SYSTEM_RAM_IMG) $(BUILD)/iso/boot/system.img
 	cp config/grub.cfg $(BUILD)/iso/boot/grub/grub.cfg
 	grub-mkrescue -o $@ $(BUILD)/iso
 

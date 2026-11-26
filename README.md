@@ -72,6 +72,10 @@ for y in 0..200 {
 
 A `.drv` module is a static ELF executable with a `.drvmeta` section carrying the `CUBEDRV\0` signature, metadata version, ABI version, flags, and a NUL-terminated name. Modules run as user-mode utility tasks; kernel-mode modules are rejected. `src/apps/demo_drv` is a minimal example, built and staged as `/system/drivers/demo.drv` by `make hdd`. See [docs/syscalls.md](docs/syscalls.md) for the syscall ABI.
 
+## Booting without an ATA controller
+
+The kernel only has a legacy ATA PIO driver, so an AHCI-only laptop or a USB stick is invisible to it. GRUB therefore loads a small ext4 root image as a Multiboot2 module (`module2 /boot/system.img` in `config/grub.cfg`) and the kernel mounts it as a RAM disk; the boot media itself is never accessed after GRUB hands over. `make iso` builds this image and can be used for USB/CD boot with CSM enabled. The `make hdd` image still uses the ATA path when no module is supplied.
+
 ## Syscall reference
 
 The complete syscall ABI, including register conventions, error values, file descriptor limits, directory record layout, open flags, and framebuffer structures, is documented in [docs/syscalls.md](docs/syscalls.md).
