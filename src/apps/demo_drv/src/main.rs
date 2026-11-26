@@ -40,7 +40,9 @@ static META: DrvMeta = DrvMeta {
 pub extern "C" fn _start() -> ! {
     sys::write(sys::STDOUT, b"[demo drv] initialized\n");
     sys::debug("[demo drv] debug channel\n");
-    sys::exit(0)
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 #[panic_handler]
