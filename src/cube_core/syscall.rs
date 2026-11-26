@@ -40,7 +40,6 @@ const DT_REG: u8 = 8;
 const DT_DIR: u8 = 4;
 
 static mut KERNEL_RSP: u64 = 0;
-static mut USER_RSP:   u64 = 0;
 
 // Таблица fd
 const MAX_FD: usize = 16;
@@ -129,9 +128,10 @@ pub fn init_syscall(kernel_rsp: u64) {
 #[unsafe(naked)]
 unsafe extern "C" fn syscall_entry() {
     core::arch::naked_asm!(
-        // сохранить user RSP, переключиться на kernel RSP
-        "mov [rip + {user_rsp}], rsp",
+        // r10 holds the user RSP until it is pushed onto this task's kernel stack.
+        "mov r10, rsp",
         "mov rsp, [rip + {kernel_rsp}]",
+        "push r10",
 
         // user RIP/RFLAGS → на стек (для iretq)
         "push rcx",
@@ -167,16 +167,16 @@ unsafe extern "C" fn syscall_entry() {
         "pop rdx", "pop rsi", "pop rdi",
         "pop r11",   // user RFLAGS
         "pop rcx",   // user RIP
+        "pop r10",   // user RSP
 
         // iretq-фрейм: SS, RSP, RFLAGS, CS, RIP
         "push 0x23",
-        "push qword ptr [rip + {user_rsp}]",
+        "push r10",
         "push r11",
         "push 0x1B",
         "push rcx",
         "iretq",
 
-        user_rsp   = sym USER_RSP,
         kernel_rsp = sym KERNEL_RSP,
         handler    = sym syscall_dispatch,
     );
