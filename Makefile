@@ -62,6 +62,7 @@ system-image: $(KERNEL) $(CSH) $(SPARKD) $(GFXDEMO) $(DEMO_DRV) config/boot.cfg 
 	cp config/boot.cfg $(SYSTEM_STAGE)/system/config/boot.cfg
 	cp config/startup.cfg $(SYSTEM_STAGE)/system/config/startup.cfg
 	cp $(DEMO_DRV) $(SYSTEM_STAGE)/system/drivers/demo.drv
+	cp $(INFO_IN) $(SYSTEM_STAGE)/system/info/
 	truncate -s $(shell expr $(RAMDISK_MB) \* 1048576) $(SYSTEM_RAM_IMG)
 	mke2fs -q -F -t ext4 -b 4096 -L CUBEOS -d $(SYSTEM_STAGE) $(SYSTEM_RAM_IMG)
 	cp $(SYSTEM_RAM_IMG) $(SYSTEM_STAGE)/system/kernel/system.img
