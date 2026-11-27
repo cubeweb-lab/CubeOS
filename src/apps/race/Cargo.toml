@@ -1,0 +1,16 @@
+[package]
+name = "race"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cube_syscall = { path = "../../libs/cube_syscall" }
+
+[[bin]]
+name = "race"
+path = "src/main.rs"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
