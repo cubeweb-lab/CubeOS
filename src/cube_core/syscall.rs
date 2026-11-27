@@ -1,6 +1,6 @@
 // src/cube_core/syscall.rs
 use core::arch::asm;
-use crate::zigfs::{self, DirItem, EMPTY_ITEM};
+use crate::fs::{self, DirItem, FSManager, EMPTY_ITEM};
 
 const IA32_EFER:  u32 = 0xC0000080;
 const IA32_STAR:  u32 = 0xC0000081;
@@ -21,6 +21,11 @@ pub const SYS_UNLINK:   u64 = 34;
 pub const SYS_RENAME:   u64 = 82;
 pub const SYS_DEBUG:    u64 = 78;
 pub const SYS_EXEC:     u64 = 99;
+pub const SYS_FB_INFO:  u64 = 100;
+pub const SYS_FB_MAP:   u64 = 101;
+pub const SYS_LOAD_DRIVER: u64 = 102;
+pub const SYS_DRIVER_COUNT: u64 = 103;
+pub const SYS_DRIVER_INFO: u64 = 104;
 
 // open() flags
 const O_WRONLY:    u64 = 0o1;
@@ -35,7 +40,6 @@ const DT_REG: u8 = 8;
 const DT_DIR: u8 = 4;
 
 static mut KERNEL_RSP: u64 = 0;
-static mut USER_RSP:   u64 = 0;
 
 // Таблица fd
 const MAX_FD: usize = 16;
@@ -64,6 +68,9 @@ enum FdKind {
 #[derive(Copy, Clone)]
 struct Fd { kind: FdKind }
 
+// FIXME: FDS, CWD_*, and WRITE_BUF are global, so user tasks share descriptors
+// and working directories. Move this state into the task/address-space object
+// before supporting concurrent interactive jobs.
 static mut FDS: [Fd; MAX_FD] = [Fd { kind: FdKind::Free }; MAX_FD];
 
 // Текущая директория: кластер (0 = корень) и абсолютный путь
@@ -105,8 +112,11 @@ pub fn init_syscall(kernel_rsp: u64) {
         // and the iretq that returned from it raised #GP.
         wrmsr(IA32_STAR, (0x10u64 << 48) | (0x08u64 << 32));
         wrmsr(IA32_LSTAR, syscall_entry as u64);
-        // IF stays set in syscalls so the keyboard and timer IRQs run while the shell waits in stdin reads.
-        wrmsr(IA32_FMASK, 0x500);
+        // Mask TF, IF and DF on entry. IF must be clear until the entry stub has
+        // switched to the kernel stack, or an IRQ taken between `syscall` and the
+        // RSP swap pushes its frame onto the user stack (kernel then runs on it).
+        // Blocking stdin reads re-enable interrupts explicitly once safe.
+        wrmsr(IA32_FMASK, 0x700);
 
         crate::serial::send_string("[SYSCALL] syscall/sysret configured\n");
         crate::serial::send_string("[TSS] rsp0=");
@@ -118,9 +128,10 @@ pub fn init_syscall(kernel_rsp: u64) {
 #[unsafe(naked)]
 unsafe extern "C" fn syscall_entry() {
     core::arch::naked_asm!(
-        // сохранить user RSP, переключиться на kernel RSP
-        "mov [rip + {user_rsp}], rsp",
+        // r10 holds the user RSP until it is pushed onto this task's kernel stack.
+        "mov r10, rsp",
         "mov rsp, [rip + {kernel_rsp}]",
+        "push r10",
 
         // user RIP/RFLAGS → на стек (для iretq)
         "push rcx",
@@ -156,16 +167,16 @@ unsafe extern "C" fn syscall_entry() {
         "pop rdx", "pop rsi", "pop rdi",
         "pop r11",   // user RFLAGS
         "pop rcx",   // user RIP
+        "pop r10",   // user RSP
 
         // iretq-фрейм: SS, RSP, RFLAGS, CS, RIP
         "push 0x23",
-        "push qword ptr [rip + {user_rsp}]",
+        "push r10",
         "push r11",
         "push 0x1B",
         "push rcx",
         "iretq",
 
-        user_rsp   = sym USER_RSP,
         kernel_rsp = sym KERNEL_RSP,
         handler    = sym syscall_dispatch,
     );
@@ -243,16 +254,16 @@ unsafe fn cwd_snapshot() -> (u32, [u8; MAX_PATH], usize) {
 // Opens a file for writing. O_CREAT creates it when missing; without O_TRUNC the existing contents are kept.
 unsafe fn open_for_write(flags: u64, input: &[u8]) -> u64 {
     let (cwd_cluster, cwd_path, cwd_len) = cwd_snapshot();
-    if zigfs::resolve(cwd_cluster, &cwd_path[..cwd_len], input).is_none() {
+    if fs::resolve(cwd_cluster, &cwd_path[..cwd_len], input).is_none() {
         if flags & O_CREAT == 0 { return u64::MAX; }
-        if !zigfs::write_file(cwd_cluster, input, &[]) { return u64::MAX; }
+        if !fs::write_file(cwd_cluster, input, &[]) { return u64::MAX; }
     }
-    let resolved = match zigfs::resolve(cwd_cluster, &cwd_path[..cwd_len], input) {
+    let resolved = match fs::resolve(cwd_cluster, &cwd_path[..cwd_len], input) {
         Some(r) => r,
         None => return u64::MAX,
     };
     let abs_len = resolved.path_len as usize;
-    let stat = match zigfs::stat(0, &resolved.path[..abs_len]) {
+    let stat = match fs::stat(0, &resolved.path[..abs_len]) {
         Some(s) => s,
         None => return u64::MAX,
     };
@@ -266,7 +277,7 @@ unsafe fn open_for_write(flags: u64, input: &[u8]) -> u64 {
     if flags & O_TRUNC == 0 && stat.size > 0 {
         let write_bufs = &mut *core::ptr::addr_of_mut!(WRITE_BUF);
         let buf = &mut write_bufs[fd][..stat.size as usize];
-        match zigfs::read(0, &resolved.path[..abs_len], 0, buf) {
+        match fs::read(0, &resolved.path[..abs_len], 0, buf) {
             Some(n) => size = n,
             None => return u64::MAX,
         }
@@ -304,7 +315,7 @@ unsafe fn flush_write_fd(fd: usize) -> u64 {
     };
     let write_bufs = &*core::ptr::addr_of!(WRITE_BUF);
     let data = &write_bufs[fd][..size];
-    if zigfs::write_file(0, &path[..path_len], data) { 0 } else { u64::MAX }
+    if fs::write_file(0, &path[..path_len], data) { 0 } else { u64::MAX }
 }
 
 // Shift state from the make/break codes of the two shift keys.
@@ -348,6 +359,8 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                 return unsafe { write_file_fd(a1 as usize, a2, a3) };
             }
             if a1 <= 2 && a2 != 0 && a3 > 0 && a3 <= 0x10000 {
+                // FIXME: validate a2/a3 with user_range_ok first; otherwise a
+                // bad pointer can make the kernel read and echo kernel memory.
                 let ptr = a2 as *const u8;
                 for i in 0..a3 as usize {
                     let byte = unsafe { *ptr.add(i) };
@@ -363,6 +376,8 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 
             // stdin — клавиатура (без sti/hlt!)
             if fd == 0 {
+                // FIXME: validate a2/a3 with user_range_ok before writing
+                // keyboard bytes; this path currently trusts the destination.
                 let buf = a2 as *mut u8;
                 let max = a3 as usize;
                 let mut n = 0usize;
@@ -397,7 +412,7 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                         let to_read = (a3 as usize).min(remaining);
                         if to_read == 0 { return 0; }
                         let out = core::slice::from_raw_parts_mut(a2 as *mut u8, to_read);
-                        match zigfs::read(0, &path[..path_len], offset, out) {
+                        match fs::read(0, &path[..path_len], offset, out) {
                             Some(n) => {
                                 if let FdKind::File { ref mut offset, .. } = FDS[fd].kind {
                                     *offset += n as u32;
@@ -425,12 +440,12 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             }
             unsafe {
                 let (cwd_cluster, cwd_path, cwd_len) = cwd_snapshot();
-                let resolved = match zigfs::resolve(cwd_cluster, &cwd_path[..cwd_len], &pathbuf[..pathlen]) {
+                let resolved = match fs::resolve(cwd_cluster, &cwd_path[..cwd_len], &pathbuf[..pathlen]) {
                     Some(r) => r,
                     None => return u64::MAX,
                 };
                 let abs_len = resolved.path_len as usize;
-                let stat = match zigfs::stat(0, &resolved.path[..abs_len]) {
+                let stat = match fs::stat(0, &resolved.path[..abs_len]) {
                     Some(s) => s,
                     None => return u64::MAX,
                 };
@@ -470,7 +485,7 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             let old = &buf[..sep];
             let new = &buf[sep + 1..len];
             unsafe {
-                if zigfs::rename(CWD_CLUSTER, old, new) { 0 } else { u64::MAX }
+                if fs::rename(CWD_CLUSTER, old, new) { 0 } else { u64::MAX }
             }
         }
         SYS_GETDENTS => {
@@ -482,7 +497,7 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                     _ => return u64::MAX,
                 };
                 let items = &mut *core::ptr::addr_of_mut!(DIR_ITEMS);
-                let count = match zigfs::list(0, &path[..path_len], items) {
+                let count = match fs::list(0, &path[..path_len], items) {
                     Some(n) => n,
                     None => return u64::MAX,
                 };
@@ -532,7 +547,7 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             };
             unsafe {
                 let (cwd_cluster, cwd_path, cwd_len) = cwd_snapshot();
-                let resolved = match zigfs::resolve(cwd_cluster, &cwd_path[..cwd_len], &pathbuf[..pathlen]) {
+                let resolved = match fs::resolve(cwd_cluster, &cwd_path[..cwd_len], &pathbuf[..pathlen]) {
                     Some(r) => r,
                     None => return u64::MAX,
                 };
@@ -551,7 +566,7 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                 Some(n) => n, None => return u64::MAX,
             };
             unsafe {
-                if zigfs::mkdir(CWD_CLUSTER, &pathbuf[..pathlen]) { 0 } else { u64::MAX }
+                if fs::mkdir(CWD_CLUSTER, &pathbuf[..pathlen]) { 0 } else { u64::MAX }
             }
         }
         SYS_UNLINK => {
@@ -562,14 +577,16 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             };
             unsafe {
                 // unlink removes only files; directories go through rmdir semantics
-                if let Some(st) = zigfs::stat(CWD_CLUSTER, &pathbuf[..pathlen]) {
+                if let Some(st) = fs::stat(CWD_CLUSTER, &pathbuf[..pathlen]) {
                     if st.is_dir != 0 { return u64::MAX; }
                 }
-                if zigfs::unlink(CWD_CLUSTER, &pathbuf[..pathlen]) { 0 } else { u64::MAX }
+                if fs::unlink(CWD_CLUSTER, &pathbuf[..pathlen]) { 0 } else { u64::MAX }
             }
         }
         SYS_DEBUG => {
             if a2 != 0 && a3 > 0 && a3 <= 0x10000 {
+                // FIXME: validate the message range with user_range_ok to stop
+                // kernel pointers from being printed to the serial console.
                 let ptr = a2 as *const u8;
                 crate::serial::send_string("[USER] ");
                 for i in 0..a3 as usize {
@@ -593,6 +610,25 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                 );
             }
         }
+        SYS_FB_INFO => {
+            let size = core::mem::size_of::<crate::fb::FbInfo>();
+            if a1 == 0 || a2 < size as u64 || !user_range_ok(a1, size) {
+                return u64::MAX;
+            }
+            match crate::fb::info() {
+                Some(info) => {
+                    unsafe {
+                        core::ptr::write_unaligned(a1 as *mut crate::fb::FbInfo, info);
+                    }
+                    0
+                }
+                None => u64::MAX,
+            }
+        }
+        SYS_FB_MAP => match crate::fb::map_current() {
+            Some(addr) => addr,
+            None => u64::MAX,
+        },
         SYS_EXEC => {
             // a1 = ptr to "path\\0", a2 = total length (включая \\0)
             if a1 == 0 || a2 == 0 || a2 > 512 {
@@ -612,39 +648,26 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             }
 
             let path = match core::str::from_utf8(&path_buf[..len]) {
-                Ok(s) => s.trim_end_matches("\\0"),
+                Ok(s) => s.trim_end_matches('\0'),
                 Err(_) => return u64::MAX,
             };
 
-            // Буфер для программы — локальный, не static mut
-            const MAX_PROGRAM_SIZE: usize = 65536;
-            let mut program_buf = [0u8; MAX_PROGRAM_SIZE];
-
-            // Читаем файл через zigfs
-            const START_DIR: u32 = 0; // корень
-            let size = match crate::zigfs::read(START_DIR, path.as_bytes(), 0, &mut program_buf) {
+            let program_buf = unsafe { &mut crate::loader::PROGRAM_BUF.0 };
+            const START_DIR: u32 = 0;
+            let size = match crate::fs::read(START_DIR, path.as_bytes(), 0, program_buf) {
                 Some(n) => n,
-                None => {
-                    crate::serial::send_string("[SYSCALL] EXEC: file not found or read error: ");
-                    crate::serial::send_string(path);
-                    crate::serial::send_string("\\n");
-                    return u64::MAX;
-                }
+                None => return u64::MAX,
             };
-
-            // Проверка ELF-магии
-            if size < 4 || program_buf[0..4] != *b"\\x7fELF" {
-                crate::serial::send_string("[SYSCALL] EXEC: invalid ELF: ");
-                crate::serial::send_string(path);
-                crate::serial::send_string("\\n");
+            if size < 4 || program_buf[0..4] != [0x7F, b'E', b'L', b'F'] {
                 return u64::MAX;
             }
+
 
             // Создаём новое адресное пространство
             let mut aspace = match crate::vmm::AddressSpace::new() {
                 Some(a) => a,
                 None => {
-                    crate::serial::send_string("[SYSCALL] EXEC: failed to create AddressSpace\\n");
+                    crate::serial::send_string("[SYSCALL] EXEC: failed to create AddressSpace\n");
                     return u64::MAX;
                 }
             };
@@ -671,7 +694,7 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                         }
                     }
                     crate::serial::send_string(core::str::from_utf8(&temp[i+1..]).unwrap_or("?"));
-                    crate::serial::send_string("\\n");
+                    crate::serial::send_string("\n");
 
                     pid as u64
                 }
@@ -681,6 +704,41 @@ extern "C" fn syscall_dispatch(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                     u64::MAX
                 }
             }
+        }
+        SYS_LOAD_DRIVER => {
+            if a1 == 0 || a2 == 0 || a2 > 512 {
+                return u64::MAX;
+            }
+            let mut path_buf = [0u8; 512];
+            let len = match unsafe { copy_user_str(a1, a2, &mut path_buf) } {
+                Some(len) => len,
+                None => return u64::MAX,
+            };
+            if path_buf[..len].iter().all(|&b| b != 0) {
+                return u64::MAX;
+            }
+            let path = match core::str::from_utf8(&path_buf[..len]) {
+                Ok(s) => s.trim_end_matches('\0'),
+                Err(_) => return u64::MAX,
+            };
+            match crate::driver::load(&FSManager::new(), path) {
+                Some(pid) => pid,
+                None => u64::MAX,
+            }
+        }
+        SYS_DRIVER_COUNT => crate::driver::count() as u64,
+        SYS_DRIVER_INFO => {
+            if !user_range_ok(a2, crate::driver::DRIVER_INFO_SIZE) {
+                return u64::MAX;
+            }
+            let mut info = [0u8; crate::driver::DRIVER_INFO_SIZE];
+            if !crate::driver::info(a1 as usize, &mut info) {
+                return u64::MAX;
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(info.as_ptr(), a2 as *mut u8, info.len());
+            }
+            0
         }
         _ => {
             crate::serial::send_string("[SYSCALL] unknown num=");

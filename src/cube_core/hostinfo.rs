@@ -1,7 +1,7 @@
 // src/cube_core/hostinfo.rs
 // Определение модели компьютера через SMBIOS (DMI)
 
-use crate::zigfs::write_file;
+use crate::fs::write_file;
 
 /// Найти tag type 13 (SMBIOS) в Multiboot2 info и вернуть указатель на таблицы
 unsafe fn find_smbios_tables(mb_info_addr: u64) -> Option<(*const u8, usize)> {

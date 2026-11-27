@@ -10,6 +10,12 @@ pub struct FramebufferInfo {
     pub height: u32,
     pub bpp: u8,
     pub fb_type: u8,
+    pub red_field_position: u8,
+    pub red_mask_size: u8,
+    pub green_field_position: u8,
+    pub green_mask_size: u8,
+    pub blue_field_position: u8,
+    pub blue_mask_size: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -23,6 +29,7 @@ pub struct MultibootInfo {
     pub framebuffer: Option<FramebufferInfo>,
     pub memory_map: &'static [MemoryMapEntry],
     pub total_size: u32,
+    pub module: Option<(u32, u32)>,
 }
 
 impl MultibootInfo {
@@ -34,6 +41,7 @@ impl MultibootInfo {
         let mut framebuffer = None;
         let mut mmap_ptr: *const MemoryMapEntry = core::ptr::null();
         let mut mmap_entries: usize = 0;
+        let mut module = None;
 
         while ptr_cur < end {
             let typ = ptr::read(ptr_cur);
@@ -43,6 +51,11 @@ impl MultibootInfo {
             if size < 8 { break; }
 
             match typ {
+                3 => {
+                    if size >= 16 && module.is_none() {
+                        module = Some((ptr::read(ptr_cur.add(2)), ptr::read(ptr_cur.add(3))));
+                    }
+                }
                 8 => {
                     // Framebuffer tag: type(4) + size(4) + framebuffer_data
                     let fb_ptr = ptr_cur.add(2) as *const u8;
@@ -52,9 +65,23 @@ impl MultibootInfo {
                     let height = ptr::read_unaligned(fb_ptr.add(16) as *const u32);
                     let bpp = ptr::read_unaligned(fb_ptr.add(20) as *const u8);
                     let fb_type = ptr::read_unaligned(fb_ptr.add(21) as *const u8);
+                    let (mut red_field_position, mut red_mask_size) = (0u8, 0u8);
+                    let (mut green_field_position, mut green_mask_size) = (0u8, 0u8);
+                    let (mut blue_field_position, mut blue_mask_size) = (0u8, 0u8);
+                    if fb_type == 1 && size >= 30 {
+                        red_field_position = ptr::read_unaligned(fb_ptr.add(24));
+                        red_mask_size = ptr::read_unaligned(fb_ptr.add(25));
+                        green_field_position = ptr::read_unaligned(fb_ptr.add(26));
+                        green_mask_size = ptr::read_unaligned(fb_ptr.add(27));
+                        blue_field_position = ptr::read_unaligned(fb_ptr.add(28));
+                        blue_mask_size = ptr::read_unaligned(fb_ptr.add(29));
+                    }
 
                     framebuffer = Some(FramebufferInfo {
                         addr, pitch, width, height, bpp, fb_type,
+                        red_field_position, red_mask_size,
+                        green_field_position, green_mask_size,
+                        blue_field_position, blue_mask_size,
                     });
                 }
                 6 => {
@@ -85,6 +112,7 @@ impl MultibootInfo {
             framebuffer,
             memory_map,
             total_size,
+            module,
         }
     }
 

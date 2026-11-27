@@ -121,11 +121,6 @@ pub fn config_apic_logs(text: &str) -> Option<&str> {
 }
 
 pub const PAGE_SIZE: u64 = 4096;
-pub const PTE_PRESENT: u64 = 1 << 0;
-pub const PTE_WRITABLE: u64 = 1 << 1;
-pub const PTE_USER: u64 = 1 << 2;
-pub const PTE_HUGE: u64 = 1 << 7;
-pub const PTE_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 
 // Level 4 is the PML4; each level indexes 512 entries of 8 bytes.
 pub fn page_table_index(virt: u64, level: u32) -> usize {

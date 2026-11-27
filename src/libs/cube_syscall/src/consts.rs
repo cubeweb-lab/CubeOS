@@ -10,9 +10,29 @@ pub const SYS_MKDIR:    usize = 14;
 pub const SYS_UNLINK:   usize = 34;
 pub const SYS_RENAME:   usize = 82;
 pub const SYS_FSTAT:    usize = 50;
+// TODO: implement SYS_FSTAT in the kernel or remove this unused constant.
 pub const SYS_DEBUG:    usize = 78;
 pub const SYS_EXEC:     usize = 99;
+pub const SYS_FB_INFO:  usize = 100;
+pub const SYS_FB_MAP:   usize = 101;
+pub const SYS_LOAD_DRIVER: usize = 102;
+pub const SYS_DRIVER_COUNT: usize = 103;
+pub const SYS_DRIVER_INFO: usize = 104;
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DriverInfo {
+    pub name: [u8; 32],
+    pub pid: u64,
+    pub abi: u32,
+    pub flags: u32,
+}
 
+impl DriverInfo {
+    pub fn name(&self) -> &str {
+        let len = self.name.iter().position(|&b| b == 0).unwrap_or(self.name.len());
+        core::str::from_utf8(&self.name[..len]).unwrap_or("")
+    }
+}
 pub const O_RDONLY:    usize = 0o0;
 pub const O_WRONLY:    usize = 0o1;
 pub const O_RDWR:      usize = 0o2;

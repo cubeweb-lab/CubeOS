@@ -105,7 +105,8 @@ init_paging:
     or eax, 0x03
     mov [PML4_TABLE_ADDR], eax
     ; Higher-half direct map: PML4[256] reuses the same PDPT, so physical
-    ; memory 0..4GiB is reachable at 0xFFFF_8000_0000_0000 + phys.
+    ; memory 0..4GiB is reachable at 0xFFFF_8000_0000_0000 + phys. memory.rs
+    ; extends this tree to cover the rest of the detected RAM at boot.
     mov [PML4_TABLE_ADDR + 256 * 8], eax
 
     mov eax, PDT_TABLE_ADDR

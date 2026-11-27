@@ -2,7 +2,6 @@
 // Определение точной модели CPU через CPUID + запись в /system/info/cpu-m
 
 use core::arch::asm;
-use crate::zigfs;
 
 // ===== CPUID =====
 
@@ -159,5 +158,5 @@ pub fn write_cpu_file(start_dir: u32) -> bool {
     line[..len].copy_from_slice(&buf[..len]);
     line[len] = b'\n';
 
-    crate::zigfs::write_file(start_dir, b"/system/info/cpu-m", &line[..len + 1])
+    crate::fs::write_file(start_dir, b"/system/info/cpu-m", &line[..len + 1])
 }

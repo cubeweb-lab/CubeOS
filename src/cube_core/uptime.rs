@@ -2,7 +2,6 @@
 // ACPI/APIC tick counter + uptime formatting
 
 use core::sync::atomic::{AtomicU64, Ordering};
-use crate::zigfs;
 
 /// Частота APIC-таймера в Гц (совпадает с timer_init_periodic).
 pub const TICK_HZ: u64 = 100;
@@ -51,7 +50,7 @@ impl Uptime {
 /// Пишет uptime в /system/info/uptime в формате
 /// "X days, X hours, X mins, X sec\n".
 /// Возвращает true при успехе.
-pub fn write_uptime_file(ata: &crate::ata::AtaDrive, fs: &crate::fs::FSManager) -> bool {
+pub fn write_uptime_file() -> bool {
     let u = Uptime::now();
 
     // Форматируем в фиксированный буфер без аллокаций.
@@ -70,7 +69,7 @@ pub fn write_uptime_file(ata: &crate::ata::AtaDrive, fs: &crate::fs::FSManager) 
     n += write_num(&mut buf[n..], u.secs);
     n += write_str(&mut buf[n..], if u.secs == 1 { " sec\n" } else { " sec\n" });
 
-    zigfs::write_file(0, b"/system/info/uptime", &buf[..n])
+    crate::fs::write_file(0, b"/system/info/uptime", &buf[..n])
 }
 
 fn write_str(dst: &mut [u8], s: &str) -> usize {

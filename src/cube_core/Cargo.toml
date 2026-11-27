@@ -10,3 +10,7 @@ kernel-debug = []
 name = "cube_core"
 crate-type = ["staticlib"]
 path = "lib.rs"
+
+[dependencies]
+x86_64 = { version = "0.15.2", default-features = false, features = ["instructions"] }
+ext4_rs = { path = "../../vendor/ext4_rs" }
